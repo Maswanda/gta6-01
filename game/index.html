@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>Solmar Bay: Heatwave — open-world crime</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0c1016; font-family: 'Segoe UI', system-ui, sans-serif; color: #f2f2f2; }
+  #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+  #status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .hud { position: fixed; z-index: 5; pointer-events: none; text-shadow: 0 1px 3px rgba(0,0,0,.8); }
+  #topleft { top: 14px; left: 16px; font-size: 20px; font-weight: 700; }
+  #cash { color: #7ddb8a; }
+  #stars { font-size: 26px; letter-spacing: 2px; margin-top: 2px; }
+  #health { margin-top: 6px; width: 210px; height: 12px; background: rgba(0,0,0,.55); border: 1px solid rgba(255,255,255,.35); border-radius: 6px; overflow: hidden; }
+  #health-fill { height: 100%; width: 100%; background: #58c96b; }
+  #health-num { font-size: 12px; color: #ddd; }
+  #ammo { margin-top: 4px; font-size: 15px; }
+  #objective { top: 14px; left: 50%; transform: translateX(-50%); text-align: center; max-width: 560px; }
+  #objective .label { font-size: 11px; letter-spacing: 2px; color: #ffd23a; text-transform: uppercase; }
+  #objective .text { font-size: 18px; font-weight: 600; }
+  #objective-dist { font-size: 14px; color: #cfe3ff; }
+  #timer { font-size: 22px; font-weight: 800; color: #ff5a4a; }
+  #minimap-wrap { left: 16px; bottom: 16px; border: 2px solid rgba(255,255,255,.4); border-radius: 6px; overflow: hidden; background: #0c1016; }
+  #minimap { display: block; }
+  #speed { right: 18px; bottom: 18px; font-size: 30px; font-weight: 800; }
+  #prompt { bottom: 110px; left: 50%; transform: translateX(-50%); font-size: 17px; font-weight: 600; background: rgba(0,0,0,.6); padding: 6px 14px; border-radius: 6px; }
+  #message { bottom: 170px; left: 50%; transform: translateX(-50%); font-size: 16px; background: rgba(0,0,0,.65); padding: 8px 16px; border-radius: 6px; opacity: 0; transition: opacity .3s; max-width: 640px; text-align: center; }
+  #banner { top: 34%; left: 50%; transform: translate(-50%, -50%); text-align: center; opacity: 0; transition: opacity .4s; }
+  #banner-title { font-size: 44px; font-weight: 900; letter-spacing: 3px; color: #ffd23a; }
+  #banner-sub { font-size: 18px; color: #fff; }
+  #save-note { top: 120px; left: 16px; font-size: 13px; color: #9fd8a8; }
+  .overlay { position: fixed; inset: 0; z-index: 10; display: none; align-items: center; justify-content: center; flex-direction: column; text-align: center; background: linear-gradient(180deg, rgba(8,12,20,.55), rgba(8,12,20,.85)); }
+  .overlay h1 { font-size: 58px; margin: 0; letter-spacing: 2px; color: #ffd23a; text-shadow: 0 3px 18px rgba(0,0,0,.9); }
+  .overlay h2 { font-size: 22px; margin: 4px 0 18px; font-weight: 400; color: #e8e8e8; }
+  .overlay .story { max-width: 620px; font-size: 16px; line-height: 1.55; color: #d5dbe4; margin-bottom: 20px; }
+  .overlay .controls { font-size: 14px; line-height: 1.8; color: #b9c2cf; margin-bottom: 24px; }
+  .overlay button { pointer-events: auto; font-size: 18px; font-weight: 700; padding: 12px 30px; margin: 4px 8px; border: none; border-radius: 8px; cursor: pointer; background: #ffd23a; color: #1a1a1a; }
+  .overlay button.secondary { background: #2e3542; color: #f2f2f2; }
+  .overlay button:hover { filter: brightness(1.12); }
+  #end-title { font-size: 64px; color: #ff4a3a; }
+</style>
+</head>
+<body>
+<canvas id="game" aria-label="Solmar Bay: Heatwave — open-world crime game"></canvas>
+<p id="status" role="status" aria-live="polite"></p>
+
+<div class="hud" id="topleft">
+  <div id="cash">$0</div>
+  <div id="stars">☆☆☆☆☆</div>
+  <div id="health"><div id="health-fill"></div></div>
+  <div id="health-num">100</div>
+  <div id="ammo">🔫 12 / 48</div>
+</div>
+<div class="hud" id="objective">
+  <div class="label">Current job</div>
+  <div class="text" id="objective-text"></div>
+  <div id="objective-dist"></div>
+  <div id="timer"></div>
+</div>
+<div class="hud" id="minimap-wrap"><canvas id="minimap" width="190" height="190"></canvas></div>
+<div class="hud" id="speed">0 km/h</div>
+<div class="hud" id="prompt"></div>
+<div class="hud" id="message"></div>
+<div class="hud" id="banner"><div id="banner-title"></div><div id="banner-sub"></div></div>
+<div class="hud" id="save-note"></div>
+
+<div class="overlay" id="menu">
+  <h1>SOLMAR BAY</h1>
+  <h2>HEATWAVE — an open-world crime story</h2>
+  <p class="story">Jax Marlowe hung up the getaway wheel years ago. Then Mara Voss called
+  from the pier, and Solmar Bay pulled him back in. Steal cars, outrun the PD,
+  run the jobs — and pull off the Big Score.</p>
+  <div class="controls">
+    WASD — move / drive &nbsp;·&nbsp; Shift — sprint &nbsp;·&nbsp; E — enter car / talk<br>
+    Mouse drag — look around &nbsp;·&nbsp; F / click — punch &nbsp;·&nbsp; G / right-click — shoot<br>
+    R — reload &nbsp;·&nbsp; Esc — pause &nbsp;·&nbsp; progress autosaves
+  </div>
+  <div>
+    <button id="btn-start">▶ New game</button>
+    <button id="btn-continue" class="secondary">Continue</button>
+  </div>
+</div>
+
+<div class="overlay" id="pause">
+  <h1 style="font-size:42px">PAUSED</h1>
+  <p class="story">Solmar Bay waits for no one — except right now.</p>
+  <div>
+    <button id="btn-resume">Resume</button>
+    <button id="btn-restart" class="secondary">Restart story</button>
+    <button id="btn-menu" class="secondary">Main menu</button>
+  </div>
+</div>
+
+<div class="overlay" id="end">
+  <h1 id="end-title">BUSTED</h1>
+  <p class="story" id="end-sub"></p>
+  <div><button id="btn-end-continue">Back on the streets</button></div>
+</div>
+
+<div class="hud" id="mission-list" style="display:none"></div>
+<script src="./vendor/three.min.js"></script>
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>
