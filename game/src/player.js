@@ -17,6 +17,8 @@ export class Player {
     this.inCar = null;
     this.moving = false;
     this.sprinting = false;
+    this.crouching = false; // hold C: half speed, squashed mesh, harder to spot
+    this.crouchForced = false; // the play-test / debug hook holds it instead
     this.hurtTimer = 0;
     this.mesh = this.buildMesh();
     this.mesh.position.copy(this.pos);
@@ -66,11 +68,16 @@ export class Player {
     if (this.inCar) return;
     const axes = input.moveAxes();
     const wantRun = input.held('ShiftLeft') || input.held('ShiftRight');
+    // Crouching halves the walk speed and squashes the figure, and the
+    // police lose the trail sooner while the player stays low.
+    this.crouching = input.held('KeyC') || this.crouchForced;
+    this.mesh.scale.y = this.crouching ? 0.62 : 1;
     // Sprint only while there is stamina left; it refills while walking.
-    this.sprinting = wantRun && this.stamina > 1;
+    this.sprinting = wantRun && this.stamina > 1 && !this.crouching;
     if (this.sprinting) this.stamina = Math.max(0, this.stamina - CFG.staminaDrain * dt);
     else this.stamina = Math.min(CFG.staminaMax, this.stamina + CFG.staminaRegen * dt);
-    const top = this.sprinting ? CFG.runSpeed : CFG.walkSpeed;
+    const top = this.crouching ? CFG.walkSpeed * CFG.crouchSpeed
+      : this.sprinting ? CFG.runSpeed : CFG.walkSpeed;
     const fx = Math.sin(camYaw);
     const fz = Math.cos(camYaw);
     const rx = -Math.cos(camYaw);

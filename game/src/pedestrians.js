@@ -108,7 +108,10 @@ export class Pedestrians {
       if (p.flee > 0) {
         p.flee -= dt;
         speed = 4.2;
-        heading = Math.atan2(dx, dz);
+        // Flee from a crime scene when one scared them, else from the player.
+        const from = p.fleeFrom || playerPos;
+        heading = Math.atan2(p.pos.x - from.x, p.pos.z - from.z);
+        if (p.flee <= 0) p.fleeFrom = null;
       } else {
         const along = p.axis === 'x' ? p.pos.x : p.pos.z;
         if (along > CFG.cityHalf || along < -CFG.cityHalf) p.heading += Math.PI;
@@ -142,5 +145,18 @@ export class Pedestrians {
       }
     }
     return false;
+  }
+
+  // Scatter every pedestrian near a point — a crime scene empties the
+  // sidewalk. The crime system calls this while an event is active.
+  scatterFrom(pos, radius) {
+    for (const p of this.list) {
+      if (p.down > 0 || p.isCrime) continue;
+      const d = Math.hypot(p.pos.x - pos.x, p.pos.z - pos.z);
+      if (d < radius) {
+        p.flee = 2;
+        p.fleeFrom = pos;
+      }
+    }
   }
 }

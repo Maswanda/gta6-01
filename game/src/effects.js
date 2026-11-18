@@ -63,6 +63,31 @@ export class Effects {
     this.burst(pos, 0xffffff, 3, 2.0, 0.25);
   }
 
+  // A shower of gold when cash changes hands — a takedown, a stopped crime,
+  // an ATM robbery. The coins burst up and rain down.
+  cashShower(pos) {
+    this.burst(pos, 0xffc23a, 14, 3.5, 0.9);
+    this.burst(pos, 0x7ddb8a, 6, 2.5, 0.7);
+  }
+
+  // Thick tyre smoke for a drift, bigger than the usual skid puff.
+  driftSmoke(pos) {
+    this.spawn(
+      pos,
+      0x8a8a8a,
+      new THREE.Vector3((Math.random() - 0.5) * 1.6, 1.4 + Math.random(), (Math.random() - 0.5) * 1.6),
+      1.1 + Math.random() * 0.4,
+      2.0 + Math.random() * 0.8,
+    );
+    this.spawn(
+      pos,
+      0xffc23a,
+      new THREE.Vector3((Math.random() - 0.5) * 2, 1.6 + Math.random(), (Math.random() - 0.5) * 2),
+      0.35,
+      1.0,
+    );
+  }
+
   // A brief muzzle flash at the gun.
   muzzle(pos, dir) {
     this.spawn(

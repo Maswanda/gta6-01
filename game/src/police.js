@@ -70,13 +70,15 @@ export class Police {
     else this.clearRoadblock();
   }
 
-  // Two interceptors parked across the street ahead of the player.
+  // Two interceptors parked across the street ahead of the player, about
+  // 70u up the player's line of travel — so the block is something to
+  // out-drive, not something the player has already passed.
   ensureRoadblock(world) {
     if (this.roadblock) return;
     const p = world.player.inCar ? world.player.inCar.pos : world.player.pos;
     const heading = world.player.inCar ? world.player.inCar.heading : world.player.heading;
     const f = new THREE.Vector3(Math.sin(heading), 0, Math.cos(heading));
-    const ahead = p.clone().addScaledVector(f, 55);
+    const ahead = p.clone().addScaledVector(f, CFG.roadblockAhead);
     // Snap to the nearest street line so the block sits on a road.
     let bestLine = STREET_LINES[0];
     let bestD = Infinity;
@@ -112,7 +114,12 @@ export class Police {
     if (this.wanted > 0) {
       this.decayTimer += dt;
       const nearest = this.nearestDistance(playerPos);
-      if (this.decayTimer > CFG.wantedDecaySeconds && (nearest === null || nearest > 45)) {
+      // Hidden means no cop can see the player: further than the hidden
+      // radius — 45u on foot or in a car, 75u while crouched. Heat cools
+      // off in 14s when hidden, not 26s, so losing the tail matters.
+      const hiddenRadius = player.crouching ? CFG.hiddenRadiusCrouched : CFG.hiddenRadius;
+      const hidden = nearest === null || nearest > hiddenRadius;
+      if (hidden && this.decayTimer > CFG.wantedDecayHiddenSeconds) {
         this.wanted -= 1;
         this.decayTimer = 0;
         world.hud.flashMessage('Heat cooling off…');
@@ -153,10 +160,18 @@ export class Police {
         bar.material.emissive.setHex(Math.floor(performance.now() / 260) % 2 === 0 ? 0xff2222 : 0x2244ff);
       }
     }
-    // A roadblock too far behind the player is lifted and re-laid ahead.
+    // A roadblock too far behind the player, or one the player has turned
+    // away from, is lifted and re-laid ahead of the new line of travel.
     if (this.roadblock) {
       const d = Math.hypot(playerPos.x - this.roadblock.x, playerPos.z - this.roadblock.z);
-      if (d > 120) {
+      const heading = player.inCar ? player.inCar.heading : player.heading;
+      const fx = Math.sin(heading);
+      const fz = Math.cos(heading);
+      const dx = this.roadblock.x - playerPos.x;
+      const dz = this.roadblock.z - playerPos.z;
+      const dl = Math.hypot(dx, dz) || 1;
+      const aheadDot = (dx / dl) * fx + (dz / dl) * fz;
+      if (d > 120 || aheadDot < 0.3) {
         this.clearRoadblock();
         this.ensureRoadblock(world);
       }

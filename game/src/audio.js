@@ -160,6 +160,20 @@ export class SoundBank {
     setTimeout(() => this.blip(1568, 0.16, 'triangle', 0.22), 80);
   }
 
+  register() {
+    // A cash-register cha-ching for a payout or a stopped crime.
+    this.blip(1568, 0.07, 'square', 0.22);
+    setTimeout(() => this.blip(2093, 0.12, 'square', 0.2), 70);
+    setTimeout(() => this.blip(2637, 0.2, 'triangle', 0.22), 150);
+  }
+
+  heistSting() {
+    // A low, dramatic hit when the heist kicks off.
+    this.blip(110, 0.5, 'sawtooth', 0.22);
+    this.blip(165, 0.5, 'sawtooth', 0.18);
+    setTimeout(() => this.blip(220, 0.4, 'sawtooth', 0.2), 220);
+  }
+
   sting() {
     // A short dramatic hit when the wanted level jumps.
     this.blip(220, 0.25, 'sawtooth', 0.2);

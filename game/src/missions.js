@@ -1,9 +1,11 @@
-// The story v2: Jax Marlowe, a retired getaway driver in Solmar Bay, gets
-// pulled back in by Mara Voss. Nine missions now, each a chain of steps —
+// The story v3: Jax Marlowe, a retired getaway driver in Solmar Bay, gets
+// pulled back in by Mara Voss. Ten missions now, each a chain of steps —
 // go to, talk, steal, deliver on a timer, fight, race, escape — with a
 // beacon in the world, a blip on the minimap and a payout at the end of
 // each one. Finishing the docks unlocks the shotgun; beating the rival crew
-// unlocks the SMG. Press M any time to see the whole job list.
+// unlocks the SMG. The tenth is the Marina Heist: slip past the casino
+// guard, crack the vault, and outrun the whole PD to the safehouse. Press
+// M any time to see the whole job list.
 import { CFG } from './config.js';
 
 export class Missions {
@@ -150,6 +152,25 @@ export class Missions {
           { text: 'Lose the heat and reach the safehouse', target: L.safehouse, radius: 5, type: 'escape' },
         ],
       },
+      {
+        id: 'marina-heist',
+        title: '10 — The Marina Heist',
+        story: 'The Meridian Casino vault, one night, one crew. Slip past the guard, crack the vault, outrun the PD.',
+        reward: CFG.heistReward,
+        steps: [
+          { text: 'Get to the Meridian Casino entrance', target: L.casinoEntrance, radius: 5, type: 'goto' },
+          { text: 'Slip past the guard (press E)', target: L.casinoEntrance, radius: 4, type: 'talk',
+            talk: 'Guard: "Meridian\'s closed to walk-ins tonight." You smile, show the forged pass, and walk in.' },
+          { text: 'Take down the vault guards (2 left)', target: L.casino, radius: 30, type: 'defeat',
+            center: 'casino', wanted: 3, enemies: [
+              // Offsets keep the guards clear of the casino doorway
+              // (78,-20) so nobody spawns on top of the player.
+              { kind: 'shooter', dx: 2, dz: 8 },
+              { kind: 'shooter', dx: 6, dz: 3 },
+            ] },
+          { text: 'Getaway — drive the cash to the safehouse, beat the clock!', target: L.safehouse, radius: 5, type: 'deliver', time: CFG.heistTimeLimit },
+        ],
+      },
     ];
   }
 
@@ -182,6 +203,7 @@ export class Missions {
     world.hud.showBanner(m.title, m.story);
     world.hud.flashMessage(m.story);
     world.sound.jingle();
+    if (m.id === 'marina-heist') world.sound.heistSting();
     this.enterStep(world);
   }
 
@@ -190,6 +212,9 @@ export class Missions {
     if (!s) return;
     this.talkReady = false;
     if (s.type === 'deliver') this.timer = s.time || CFG.missionTimeLimit;
+    // A step that names a wanted level raises the heat when it starts
+    // (the vault guards trip the alarm; a talk step raises it on the talk).
+    if (s.wanted && s.type !== 'talk') world.police.addWanted(s.wanted, world);
     if (s.type === 'defeat' && s.enemies) {
       const base = this.landmarks[s.center || 'docks'];
       world.combat.spawnEnemies(world, s.enemies.map((e) => ({

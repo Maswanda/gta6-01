@@ -1,8 +1,9 @@
-// Saving v2: cash, story progress, weapons and side-activity results
+// Saving v3: cash, story progress, weapons and side-activity results
 // persist in localStorage so the player can continue after closing the tab.
-// Autosaves on mission complete and on every side-job payout. The v2 key is
-// separate from v1's, so an old save never loads into the new story.
-const KEY = 'solmar-bay-heatwave-save-v2';
+// Autosaves on mission complete and on every side-job payout. The v3 key is
+// separate from v2's, so an old save never loads into the new story. v3
+// also keeps a crime tally: how many ambient events the player stopped.
+const KEY = 'solmar-bay-heatwave-save-v3';
 
 export class Save {
   constructor(world) {
@@ -30,6 +31,7 @@ export class Save {
         reserve: w.combat.reserve,
         health: w.player.health,
         side: w.side.getSave(),
+        crime: w.crime ? w.crime.getSave() : null,
         savedAt: Date.now(),
       };
       localStorage.setItem(KEY, JSON.stringify(data));
@@ -55,6 +57,7 @@ export class Save {
       w.missions.done = !!d.done;
       w.missions.step = 0;
       w.side.applySave(d.side);
+      if (w.crime) w.crime.applySave(d.crime);
       return true;
     } catch {
       return false;

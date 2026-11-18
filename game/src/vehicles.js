@@ -118,6 +118,9 @@ export class Car {
     this.dir = opts.dir || 1;
     this.targetSpeed = CFG.trafficSpeed;
     this.skidTimer = 0;
+    // Drift state: set by drive() when the car slides through a hard turn.
+    this.drifting = false;
+    this.driftSteer = 0;
     // A per-car top-speed override (the police set it from the wanted level).
     this.topSpeedOverride = null;
   }
@@ -144,11 +147,24 @@ export class Car {
     }
     const top = this.topSpeedOverride ?? (this.isPolice ? CFG.policeTopSpeed : t.topSpeed);
     this.speed = Math.max(-CFG.carReverseMax, Math.min(top, this.speed));
+    // Drift: a hard steer at speed swings the tail out — extra yaw, a
+    // sideways slide and body roll. Only the player and the police ever
+    // steer hard enough to drift; traffic never does.
+    this.drifting = Math.abs(steer) > 0.7 && Math.abs(this.speed) > 14;
+    this.driftSteer = this.drifting ? steer : 0;
     if (Math.abs(this.speed) > 0.2) {
-      this.heading += steer * t.steer * dt * Math.min(1, Math.abs(this.speed) / 8) * Math.sign(this.speed);
+      let yaw = steer * t.steer * dt * Math.min(1, Math.abs(this.speed) / 8) * Math.sign(this.speed);
+      if (this.drifting) yaw += steer * t.steer * dt * 0.55;
+      this.heading += yaw;
     }
     const f = this.forward;
     this.pos.addScaledVector(f, this.speed * dt);
+    if (this.drifting) {
+      // The tail slides out sideways, opposite the turn.
+      const slide = -steer * Math.abs(this.speed) * 0.1 * dt;
+      this.pos.x += Math.cos(this.heading) * slide;
+      this.pos.z -= Math.sin(this.heading) * slide;
+    }
     if (collideCircle(this.pos, t.radius, colliders)) {
       const impact = Math.abs(this.speed);
       this.pos.copy(prev);
@@ -251,6 +267,8 @@ export class Car {
   syncMesh(dt) {
     this.mesh.position.set(this.pos.x, 0, this.pos.z);
     this.mesh.rotation.y = this.heading;
+    // Body roll while drifting: the car leans out of the turn.
+    this.mesh.rotation.z = -this.driftSteer * 0.1;
     const spin = (this.speed * dt) / 0.36;
     for (const w of this.mesh.userData.wheels) w.rotation.x += spin;
   }
@@ -310,4 +328,23 @@ export function spawnMarinaSports(scene, landmarks) {
   const m = landmarks.marina;
   const car = new Car(scene, m.x + 6, m.z - 6, Math.PI / 2, 0xe8c33a, { parked: true, type: 'sports' });
   return car;
+}
+
+// v3: four luxury sports cars parked in a row in front of the Meridian
+// Casino — stealable, and the heist's getaway rides. The centre of the row
+// stays clear for the casino entrance and its red carpet.
+export function spawnCasinoSports(scene, landmarks) {
+  const c = landmarks.casino;
+  const cars = [];
+  const spots = [
+    { x: c.x - 14, color: 0xd83a5a },
+    { x: c.x - 8, color: 0x2e6fc2 },
+    { x: c.x + 8, color: 0xe8c33a },
+    { x: c.x + 14, color: 0x7a4fc2 },
+  ];
+  for (const s of spots) {
+    const car = new Car(scene, s.x, c.z + 18, 0, s.color, { parked: true, type: 'sports' });
+    cars.push(car);
+  }
+  return cars;
 }

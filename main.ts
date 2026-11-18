@@ -1,12 +1,14 @@
-// Solmar Bay: Heatwave v2 — the entry program (Node 22, standard library only).
+// Solmar Bay: Heatwave v3 — the entry program (Node 22, standard library only).
 // The game is this directory's game/ folder: plain static files a desktop
 // browser loads offline (game/index.html, its ES modules and the vendored
 // three.js build — no network request anywhere), plus 4 screenshots of the
 // game itself. This program hands it in: it copies game/ and screenshots/
 // from beside this file to /output and writes /output/dossier.json, the
-// summary the judge reads, with the vendored make.fun library. v2's game is
-// bigger — nine story missions, three side activities, four vehicle types,
-// three weapons and four districts — but the hand-in is the same shape.
+// summary the judge reads, with the vendored make.fun library. v3's game is
+// bigger — ten story missions including the Marina Heist, a dynamic crime
+// system, a day/night cycle, drift and a police chase that loses the trail,
+// three side activities, four vehicle types, three weapons and four
+// districts — but the hand-in is the same shape.
 //
 // Serve it locally with `node serve.ts`, then open http://localhost:8080.
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
@@ -47,4 +49,4 @@ writeFileSync(
   }),
 );
 
-console.log(`Solmar Bay v2 handed in: ${shots.length} screenshots, dossier written to ${join(out, 'dossier.json')}`);
+console.log(`Solmar Bay v3 handed in: ${shots.length} screenshots, dossier written to ${join(out, 'dossier.json')}`);

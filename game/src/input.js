@@ -2,6 +2,8 @@
 // (consume() reports a key once, so E / R / Escape fire a single action).
 // New in v2: M opens the mission tracker, 1/2/3 pick a weapon, Q cycles
 // weapons, H honks the horn, and T works the side activities (taxi, race).
+// v3: C crouches, and pressKey/releaseKey let the automated play-test hold
+// a key down (a drift needs W + A together for more than a frame).
 export class Input {
   constructor() {
     this.down = new Set();
@@ -55,6 +57,16 @@ export class Input {
 
   held(code) {
     return this.down.has(code);
+  }
+
+  // Hold or release a key from code (the play-test's drift needs this).
+  pressKey(code) {
+    this.down.add(code);
+    this.anyKey = true;
+  }
+
+  releaseKey(code) {
+    this.down.delete(code);
   }
 
   // True once for the frame the key went down; clears after being read.

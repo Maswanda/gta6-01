@@ -71,10 +71,12 @@ export class Combat {
       e.attackTimer -= dt;
       if (e.kind === 'shooter') {
         // Keep a firing distance, strafe a little, shoot when in range.
+        // Guard d ~ 0 (player standing on the shooter): dividing by d
+        // would poison the position with NaN, so hold still instead.
         if (d > 16) {
           e.pos.x += (dx / d) * 3.0 * dt;
           e.pos.z += (dz / d) * 3.0 * dt;
-        } else if (d < 8) {
+        } else if (d > 0.01 && d < 8) {
           e.pos.x -= (dx / d) * 2.0 * dt;
           e.pos.z -= (dz / d) * 2.0 * dt;
         }
@@ -119,9 +121,11 @@ export class Combat {
     const hit = (pos, radius, damage, knock) => {
       const dx = pos.x - p.pos.x;
       const dz = pos.z - p.pos.z;
+      const d = Math.hypot(dx, dz);
       const along = dx * f.x + dz * f.z;
       const side = Math.abs(dx * f.z - dz * f.x);
-      if (along > 0 && along < CFG.punchRange + radius && side < 1.2) {
+      // Point-blank: a target standing on the player is always in reach.
+      if (d < 1.0 || (along > 0 && along < CFG.punchRange + radius && side < 1.2)) {
         if (knock) {
           pos.x += f.x * 1.6;
           pos.z += f.z * 1.6;
@@ -146,9 +150,11 @@ export class Combat {
         if (ped.down > 0) continue;
         const dx = ped.pos.x - p.pos.x;
         const dz = ped.pos.z - p.pos.z;
+        const d = Math.hypot(dx, dz);
         const along = dx * f.x + dz * f.z;
         const side = Math.abs(dx * f.z - dz * f.x);
-        if (along > 0 && along < CFG.punchRange + 0.5 && side < 1.2) {
+        // Point-blank: a ped standing on the player is always in reach.
+        if (d < 1.0 || (along > 0 && along < CFG.punchRange + 0.5 && side < 1.2)) {
           ped.down = 1;
           ped.downTimer = 0;
           world.police.addWanted(1, world);
@@ -197,11 +203,15 @@ export class Combat {
         if (e.hp <= 0) continue;
         const dx = e.pos.x - p.pos.x;
         const dz = e.pos.z - p.pos.z;
+        const d = Math.hypot(dx, dz);
         const along = dx * dir.x + dz * dir.z;
         const side = Math.abs(dx * dir.z - dz * dir.x);
-        if (along > 0 && along < def.range && side < 1.4 && along < bestD) {
+        // Point-blank: an enemy standing on the player is always hit.
+        const inArc = along > 0 && along < def.range && side < 1.4;
+        const reach = d < 1.5 ? 0 : along;
+        if ((inArc || d < 1.5) && reach < bestD) {
           best = e;
-          bestD = along;
+          bestD = reach;
         }
       }
       if (best) {
@@ -278,7 +288,10 @@ export class Combat {
     e.mesh.rotation.x = -Math.PI / 2;
     e.mesh.position.y = 0.3;
     world.effects.burst(e.pos, 0xff5a4a, 12, 3, 0.7);
+    world.effects.cashShower(e.pos.clone().setY(1));
+    world.sound.register();
     world.player.cash += 40;
+    world.hud.showCashPopup(40);
     world.hud.flashMessage('Kestrel down — +$40');
   }
 

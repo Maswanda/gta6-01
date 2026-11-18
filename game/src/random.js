@@ -43,4 +43,10 @@ export class Rng {
   around(mid, spread) {
     return mid + (this.next() + this.next() - 1) * spread;
   }
+  // A child generator derived from this one, so a subsystem (the crime
+  // system) can draw its own deterministic stream without disturbing the
+  // city layout's draws.
+  fork(seed) {
+    return new Rng((seed >>> 0) ^ Math.floor(this.next() * 0xffffffff));
+  }
 }

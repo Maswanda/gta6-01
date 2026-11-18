@@ -1,8 +1,11 @@
-// HUD v2: cash, wanted stars, health and stamina, the current weapon,
+// HUD v3: cash, wanted stars, health and stamina, the current weapon,
 // speed, the mission objective, a mission tracker (M lists every job with
-// its status), and a bigger minimap with district names, collectible dots
-// and side-activity markers — all DOM + one 2D canvas, drawn every frame
-// from the live game state. Also owns the start / pause / busted screens.
+// its status), and a bigger minimap with district names, collectible dots,
+// side-activity markers and red crime blips — all DOM + one 2D canvas,
+// drawn every frame from the live game state. Also owns the start / pause /
+// busted screens. v3 adds a floating cash popup on every payout, wanted
+// stars that pulse when the level changes, a banner pop-in, a crime
+// indicator and a day/night readout.
 import { CFG, STREET_LINES, districtAt } from './config.js';
 
 export class HUD {
@@ -11,7 +14,8 @@ export class HUD {
     for (const id of ['cash', 'stars', 'health-fill', 'health-num', 'stamina-fill', 'stamina-num',
       'ammo', 'weapon', 'speed', 'district', 'objective', 'objective-text', 'objective-dist',
       'prompt', 'message', 'banner', 'banner-title', 'banner-sub', 'menu', 'pause', 'end',
-      'end-title', 'end-sub', 'minimap', 'mission-list', 'timer', 'save-note', 'btn-continue']) {
+      'end-title', 'end-sub', 'minimap', 'mission-list', 'timer', 'save-note', 'btn-continue',
+      'crime-indicator', 'daynight', 'cash-popup']) {
       this.el[id] = document.getElementById(id);
     }
     this.minimap = this.el.minimap.getContext('2d');
@@ -19,6 +23,8 @@ export class HUD {
     this.bannerTimer = 0;
     this.promptText = '';
     this.trackerOpen = false;
+    this.lastCash = 0;
+    this.lastWanted = 0;
     document.getElementById('btn-start').addEventListener('click', () => this.onStart && this.onStart(false));
     document.getElementById('btn-continue').addEventListener('click', () => this.onStart && this.onStart(true));
     document.getElementById('btn-resume').addEventListener('click', () => this.onResume && this.onResume());
@@ -67,6 +73,22 @@ export class HUD {
     this.el['banner-sub'].textContent = sub || '';
     this.el.banner.style.opacity = '1';
     this.bannerTimer = 3.2;
+    // Pop-in: restart the banner animation so it scales in every time.
+    this.el.banner.style.animation = 'none';
+    void this.el.banner.offsetWidth;
+    this.el.banner.style.animation = '';
+  }
+
+  // A floating "+$X" over the cash readout, for every payout.
+  showCashPopup(amount) {
+    if (!this.el['cash-popup'] || amount <= 0) return;
+    const el = this.el['cash-popup'];
+    el.textContent = `+$${amount.toLocaleString('en-US')}`;
+    el.style.animation = 'none';
+    void el.offsetWidth;
+    el.style.animation = '';
+    el.style.opacity = '1';
+    setTimeout(() => { el.style.opacity = '0'; }, 1400);
   }
 
   setPrompt(text) {
@@ -94,17 +116,50 @@ export class HUD {
     const coins = `Solmar coins ${side.collected.size}/${CFG.collectibleCount}`;
     const taxi = side.taxiBest ? `Taxi best ${Math.round(side.taxiBest)}s (${side.taxiRuns} runs)` : 'Taxi — not run yet';
     const race = side.raceBest ? `Race best ${Math.round(side.raceBest)}s (${side.raceRuns} runs)` : 'Street race — not run yet';
-    this.el['mission-list'].innerHTML = `<b>STORY</b>${rows}<b>SIDE JOBS</b><div>${coins}</div><div>${taxi}</div><div>${race}</div>`;
+    const crime = world.crime ? `Crimes stopped ${world.crime.interventions} (seen ${world.crime.eventsSeen})` : '';
+    this.el['mission-list'].innerHTML = `<b>STORY</b>${rows}<b>SIDE JOBS</b><div>${coins}</div><div>${taxi}</div><div>${race}</div><div>${crime}</div>`;
     this.el['mission-list'].style.display = 'block';
   }
 
   update(dt, world) {
     const p = world.player;
     this.el.cash.textContent = `$${p.cash.toLocaleString('en-US')}`;
+    // A payout floats up as a cash popup; the first frame seeds the baseline.
+    if (this.lastCash === 0 && p.cash === 0) this.lastCash = 0;
+    else if (p.cash > this.lastCash) this.showCashPopup(p.cash - this.lastCash);
+    this.lastCash = p.cash;
     let stars = '';
     for (let i = 0; i < CFG.maxWanted; i++) stars += i < world.police.wanted ? '★' : '☆';
     this.el.stars.textContent = stars;
     this.el.stars.style.color = world.police.wanted > 0 ? '#ffcf3a' : '#8a8f98';
+    // The stars pulse when the wanted level changes.
+    if (world.police.wanted !== this.lastWanted) {
+      this.el.stars.style.animation = 'none';
+      void this.el.stars.offsetWidth;
+      this.el.stars.style.animation = '';
+      this.lastWanted = world.police.wanted;
+    }
+    // Crime indicator: a red line while an ambient event is live.
+    if (this.el['crime-indicator']) {
+      const crime = world.crime && world.crime.event;
+      if (crime) {
+        const label = crime.type === 'carjacking' ? 'CARJACKING' : crime.type === 'pursuit' ? 'POLICE PURSUIT' : 'ATM ROBBERY';
+        this.el['crime-indicator'].textContent = `🚨 ${label} — stop it for cash!`;
+        this.el['crime-indicator'].style.display = 'block';
+      } else {
+        this.el['crime-indicator'].style.display = 'none';
+      }
+    }
+    // Day / night readout: sun or moon plus the time of day.
+    if (this.el.daynight && world.city) {
+      const n = world.city.nightness();
+      const dayFrac = world.city.dayFrac ? world.city.dayFrac() : 0.12;
+      const hour = Math.floor(((dayFrac + 0.25) % 1) * 24);
+      const mm = Math.floor((((dayFrac + 0.25) % 1) * 24 % 1) * 60);
+      const hh = String(hour).padStart(2, '0');
+      const mn = String(mm).padStart(2, '0');
+      this.el.daynight.textContent = n > 0.5 ? `🌙 NIGHT ${hh}:${mn}` : `☀️ DAY ${hh}:${mn}`;
+    }
     this.el['health-fill'].style.width = `${Math.max(0, p.health)}%`;
     this.el['health-fill'].style.background = p.health > 50 ? '#58c96b' : p.health > 25 ? '#e8a33a' : '#d83a3a';
     this.el['health-num'].textContent = `${Math.ceil(Math.max(0, p.health))}`;
@@ -217,6 +272,19 @@ export class HUD {
       c.fill();
       c.strokeStyle = '#7a5a00';
       c.stroke();
+    }
+    // Active crime event: a red blip that pulses.
+    if (world.crime && world.crime.event) {
+      const pos = world.crime.eventPos();
+      if (pos) {
+        const pulse = 6 + Math.sin(performance.now() / 150) * 2.5;
+        c.fillStyle = '#ff3333';
+        c.beginPath();
+        c.arc(toX(pos.x), toZ(pos.z), pulse, 0, Math.PI * 2);
+        c.fill();
+        c.strokeStyle = '#7a0000';
+        c.stroke();
+      }
     }
     // Traffic (grey), police (red/blue flash), player (white arrow).
     c.fillStyle = '#9aa2ad';

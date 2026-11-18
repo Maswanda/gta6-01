@@ -102,7 +102,7 @@ export class SideActivities {
 
   taxiSpots() {
     const L = this.landmarks;
-    return [L.pier, L.bar, L.bank, L.garage, L.docks, L.safehouse, L.marina, L.clockTower, L.warehouse].filter(Boolean);
+    return [L.pier, L.bar, L.bank, L.garage, L.docks, L.safehouse, L.marina, L.clockTower, L.warehouse, L.casino].filter(Boolean);
   }
 
   startTaxi(world) {
@@ -212,10 +212,14 @@ export class SideActivities {
         const spent = CFG.taxiTimeLimit - this.taxi.timer;
         this.taxiRuns += 1;
         if (!this.taxiBest || spent < this.taxiBest) this.taxiBest = spent;
-        world.player.cash += 80;
+        // v3: a night shift pays a bonus on top of the fare.
+        const night = world.city && world.city.nightness() > 0.5;
+        const fare = 80 + (night ? CFG.taxiNightBonus : 0);
+        world.player.cash += fare;
+        world.hud.showCashPopup(fare);
         this.taxi.state = 'idle';
         this.taxiBeacon.visible = false;
-        world.hud.showBanner('FARE COMPLETE', `+$80 — ${Math.round(spent)}s (best ${Math.round(this.taxiBest)}s)`);
+        world.hud.showBanner('FARE COMPLETE', `+$${fare}${night ? ' (night bonus!)' : ''} — ${Math.round(spent)}s (best ${Math.round(this.taxiBest)}s)`);
         world.sound.jingle();
         world.save.save();
       }

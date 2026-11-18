@@ -109,26 +109,100 @@ function makeSkyTexture() {
   return tex;
 }
 
+// A billboard face with real lettering, so a screenshot can read the city.
+function makeBillboardTexture(text, fg, bg) {
+  const cv = document.createElement('canvas');
+  cv.width = 512;
+  cv.height = 160;
+  const g = cv.getContext('2d');
+  g.fillStyle = bg;
+  g.fillRect(0, 0, 512, 160);
+  g.strokeStyle = fg;
+  g.lineWidth = 6;
+  g.strokeRect(8, 8, 496, 144);
+  g.fillStyle = fg;
+  g.font = '900 64px sans-serif';
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.fillText(text, 256, 84);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+// Night sky: a deep blue gradient the day texture fades into after dusk.
+function makeNightSkyTexture() {
+  const cv = document.createElement('canvas');
+  cv.width = 16;
+  cv.height = 256;
+  const g = cv.getContext('2d');
+  const grad = g.createLinearGradient(0, 0, 0, 256);
+  grad.addColorStop(0, '#050a18');
+  grad.addColorStop(0.5, '#0e1e3a');
+  grad.addColorStop(0.8, '#1a2a4a');
+  grad.addColorStop(1, '#2a3a5a');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 16, 256);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+// How much of the night is in the sky at a day fraction (0 = dawn, 0.25 =
+// noon, 0.5 = dusk, 0.75 = midnight): dark from just after dusk until just
+// before dawn, with a smooth ramp either side.
+function nightnessAt(frac) {
+  const f = ((frac % 1) + 1) % 1;
+  const up = smoothstep(0.5, 0.62, f);
+  const down = 1 - smoothstep(0.86, 0.96, f);
+  return up * down;
+}
+
+function smoothstep(a, b, x) {
+  const t = Math.max(0, Math.min(1, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+}
+
+function lerpColor(a, b, t) {
+  return new THREE.Color(a).lerp(new THREE.Color(b), t);
+}
+
 export function buildCity(scene, rng) {
   const colliders = [];
   const group = new THREE.Group();
   group.name = 'city';
   const animated = [];
+  // Night-glow materials the day/night cycle turns up after dusk.
+  const facadeMats = [];
+  const nightGlow = { beacons: [], lamps: null, neon: [] };
 
-  // Golden-hour lighting: warm sun, soft sky bounce, hazy distance.
+  // Golden-hour lighting: warm sun, soft sky bounce, hazy distance. The
+  // day/night cycle below re-aims and re-colours these as the day turns.
   const hemi = new THREE.HemisphereLight(0xbfd9ff, 0x8a7a5a, 0.95);
   scene.add(hemi);
   const sun = new THREE.DirectionalLight(0xffe2b0, 1.7);
   sun.position.set(140, 190, 70);
   scene.add(sun);
+  const moon = new THREE.DirectionalLight(0x8aa8ff, 0);
+  moon.position.set(-120, 200, -80);
+  scene.add(moon);
   scene.fog = new THREE.Fog(0xf2c98f, 150, 520);
-  // Sky dome: a gradient shell so the horizon glows at golden hour.
-  const sky = new THREE.Mesh(
-    new THREE.SphereGeometry(680, 24, 16),
-    new THREE.MeshBasicMaterial({ map: makeSkyTexture(), side: THREE.BackSide, fog: false }),
-  );
+  // Sky dome: a gradient shell so the horizon glows at golden hour. The
+  // night texture is swapped in as the day fraction crosses dusk.
+  const skyMat = new THREE.MeshBasicMaterial({ map: makeSkyTexture(), side: THREE.BackSide, fog: false });
+  const sky = new THREE.Mesh(new THREE.SphereGeometry(680, 24, 16), skyMat);
   scene.add(sky);
+  const nightSkyTex = makeNightSkyTexture();
+  const daySkyTex = skyMat.map;
   scene.background = new THREE.Color(0x9fc4e8);
+  // The moon itself: a pale disc that fades in at night.
+  const moonDisc = new THREE.Mesh(
+    new THREE.CircleGeometry(18, 24),
+    new THREE.MeshBasicMaterial({ color: 0xf2f2d8, transparent: true, opacity: 0, fog: false }),
+  );
+  moonDisc.position.set(-320, 300, -420);
+  moonDisc.lookAt(0, 0, 0);
+  scene.add(moonDisc);
   // Drifting clouds.
   const cloudMat = new THREE.MeshLambertMaterial({ color: 0xffffff, transparent: true, opacity: 0.85 });
   for (let i = 0; i < 9; i++) {
@@ -152,10 +226,11 @@ export function buildCity(scene, rng) {
   ground.rotation.x = -Math.PI / 2;
   group.add(ground);
 
-  // The sea south of the city, and a sand strip.
+  // The sea south of the city, shinier in v3 — a Phong surface so the sun
+  // and the marina lights glitter on it — and a sand strip.
   const sea = new THREE.Mesh(
     new THREE.PlaneGeometry(WORLD, 190),
-    new THREE.MeshLambertMaterial({ color: 0x2e7fa8 }),
+    new THREE.MeshPhongMaterial({ color: 0x2e7fa8, shininess: 90, specular: 0x99ccff }),
   );
   sea.rotation.x = -Math.PI / 2;
   sea.position.set(0, 0.06, CFG.worldHalf + 88);
@@ -222,10 +297,11 @@ export function buildCity(scene, rng) {
         const bx = x0 + 2 + s * (w / count) + bw / 2;
         let h;
         if (d === 'Northside') h = rng.range(30, 58);
-        else if (downtown) h = rng.range(26, 52);
+        else if (downtown) h = rng.range(34, 66); // v3: taller Downtown towers
         else if (d === 'Old Town') h = rng.range(7, 15);
         else h = rng.range(8, 26);
         const mat = new THREE.MeshLambertMaterial({ map: facades[rng.int(0, facades.length - 1)] });
+        facadeMats.push(mat);
         const b = new THREE.Mesh(new THREE.BoxGeometry(bw, h, bd), mat);
         b.position.set(bx, h / 2, cz);
         group.add(b);
@@ -237,6 +313,16 @@ export function buildCity(scene, rng) {
           const cap = new THREE.Mesh(new THREE.BoxGeometry(bw * 0.4, 3, bd * 0.4), roofMat);
           cap.position.set(bx, h + 2.2, cz);
           group.add(cap);
+        }
+        // v3: a red rooftop beacon on every tall tower, blinking at night.
+        if (h > 30) {
+          const beacon = new THREE.Mesh(
+            new THREE.SphereGeometry(0.7, 8, 6),
+            new THREE.MeshBasicMaterial({ color: 0xff2222, transparent: true, opacity: 0.9 }),
+          );
+          beacon.position.set(bx, h + 1.2, cz);
+          group.add(beacon);
+          nightGlow.beacons.push(beacon);
         }
         colliders.push({
           minX: bx - bw / 2, maxX: bx + bw / 2,
@@ -251,6 +337,7 @@ export function buildCity(scene, rng) {
   function landmarkBuilding(x, z, w, d, h, color, name, facadeSet) {
     const set = facadeSet || downtownFacades;
     const mat = new THREE.MeshLambertMaterial({ map: set[rng.int(0, set.length - 1)], color });
+    facadeMats.push(mat);
     const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
     b.position.set(x, h / 2, z);
     group.add(b);
@@ -271,6 +358,38 @@ export function buildCity(scene, rng) {
   landmarkBuilding(-26, 26, 26, 26, 74, 0xe8d8b0, 'tower');
   // The Meridian Casino, Northside's neon block.
   landmarkBuilding(78, -26, 30, 24, 22, 0xd8a0c0, 'casino', northFacades);
+  // v3: the casino's face. A neon MERIDIAN sign over the entrance, a canopy
+  // on two columns, and a red carpet to the street — the heist walks in here.
+  const neonTex = makeBillboardTexture('MERIDIAN', '#ff5ad0', '#1a0a22');
+  const neon = new THREE.Mesh(
+    new THREE.PlaneGeometry(20, 6.2),
+    new THREE.MeshBasicMaterial({ map: neonTex }),
+  );
+  neon.position.set(78, 25, -13.4);
+  group.add(neon);
+  nightGlow.neon.push(neon.material);
+  const canopy = new THREE.Mesh(
+    new THREE.BoxGeometry(14, 0.6, 7),
+    new THREE.MeshLambertMaterial({ color: 0x8a1a4a }),
+  );
+  canopy.position.set(78, 5.4, -11);
+  group.add(canopy);
+  for (const cx of [72, 84]) {
+    const column = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.5, 0.5, 5.4, 10),
+      new THREE.MeshLambertMaterial({ color: 0xe8d8b0 }),
+    );
+    column.position.set(cx, 2.7, -8.5);
+    group.add(column);
+  }
+  const carpet = new THREE.Mesh(
+    new THREE.PlaneGeometry(6, 9),
+    new THREE.MeshLambertMaterial({ color: 0xa01828 }),
+  );
+  carpet.rotation.x = -Math.PI / 2;
+  carpet.position.set(78, 0.07, -9.5);
+  group.add(carpet);
+  landmarks.casinoEntrance = new THREE.Vector3(78, 0, -10);
   // Old Town clock tower.
   const clock = landmarkBuilding(-130, 26, 14, 14, 34, 0xc0a080, 'clockTower', oldTownFacades);
   const clockFace = new THREE.Mesh(
@@ -334,6 +453,54 @@ export function buildCity(scene, rng) {
     animated.push({ obj: boat, kind: 'boat', phase: i * 1.3 });
   }
 
+  // A yacht at the Marina, bigger than the day boats, with a navigation
+  // light on its mast that blinks after dark.
+  const yacht = new THREE.Group();
+  const yachtHull = new THREE.Mesh(
+    new THREE.BoxGeometry(4.5, 1.4, 11),
+    new THREE.MeshLambertMaterial({ color: 0xf2f2f2 }),
+  );
+  yachtHull.position.y = 0.7;
+  yacht.add(yachtHull);
+  const yachtCabin = new THREE.Mesh(
+    new THREE.BoxGeometry(3.2, 1.6, 5),
+    new THREE.MeshLambertMaterial({ color: 0xd8e8f2 }),
+  );
+  yachtCabin.position.set(0, 2.2, -0.5);
+  yacht.add(yachtCabin);
+  const yachtMast = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.14, 0.14, 8, 6),
+    new THREE.MeshLambertMaterial({ color: 0x3a3d42 }),
+  );
+  yachtMast.position.set(0, 6, 1);
+  yacht.add(yachtMast);
+  const navLight = new THREE.Mesh(
+    new THREE.SphereGeometry(0.4, 8, 6),
+    new THREE.MeshBasicMaterial({ color: 0xff3333, transparent: true, opacity: 0.9 }),
+  );
+  navLight.position.set(0, 10.2, 1);
+  yacht.add(navLight);
+  nightGlow.beacons.push(navLight);
+  yacht.position.set(60, 0.1, 296);
+  yacht.rotation.y = 0.3;
+  group.add(yacht);
+  animated.push({ obj: yacht, kind: 'boat', phase: 2.6 });
+
+  // Dock lights along the Marina walk, so the waterfront glows at night.
+  const dockLampMat = new THREE.MeshLambertMaterial({ color: 0xffe9a8, emissive: 0xffd76a });
+  nightGlow.lamps = dockLampMat;
+  for (let x = -40; x <= 120; x += 40) {
+    const post = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.12, 0.16, 4.5, 6),
+      new THREE.MeshLambertMaterial({ color: 0x3a3d42 }),
+    );
+    post.position.set(x, 2.2, 244);
+    group.add(post);
+    const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.4, 8, 6), dockLampMat);
+    bulb.position.set(x, 4.6, 244);
+    group.add(bulb);
+  }
+
   // Pier: a low wooden deck reaching into the sea, where Mara waits.
   const pierMat = new THREE.MeshLambertMaterial({ color: 0x8a6a48 });
   const pier = new THREE.Mesh(new THREE.BoxGeometry(10, 0.16, 60), pierMat);
@@ -377,9 +544,10 @@ export function buildCity(scene, rng) {
   animated.push({ obj: beam, kind: 'beam' });
   landmarks.lighthouse = new THREE.Vector3(-60, 0, CFG.worldHalf + 50);
 
-  // Street lamps along the avenues.
+  // Street lamps along the avenues. Their bulbs brighten after dark.
   const poleMat = new THREE.MeshLambertMaterial({ color: 0x3a3d42 });
   const lampMat = new THREE.MeshLambertMaterial({ color: 0xffe9a8, emissive: 0xffd76a });
+  nightGlow.streetLampMat = lampMat;
   for (const line of STREET_LINES) {
     for (let v = -182; v <= 182; v += 52) {
       const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.16, 6, 6), poleMat);
@@ -391,10 +559,13 @@ export function buildCity(scene, rng) {
     }
   }
 
-  // Billboards on the beachfront avenue.
+  // Billboards on the beachfront avenue, with real lettering in v3, plus
+  // two more on the Downtown avenues so the name reads from across town.
   const billboards = [
     { x: -52, z: 208, text: 'SOLMAR', color: '#d83a5a' },
     { x: 52, z: 208, text: 'HEATWAVE', color: '#2e6fc2' },
+    { x: -104, z: -52, text: 'SOLMAR BAY', color: '#ffd23a', face: 'x' },
+    { x: 104, z: 52, text: 'HEATWAVE', color: '#39d0ff', face: 'x' },
   ];
   for (const b of billboards) {
     const board = new THREE.Mesh(
@@ -402,13 +573,19 @@ export function buildCity(scene, rng) {
       new THREE.MeshLambertMaterial({ color: 0x22242a }),
     );
     board.position.set(b.x, 9, b.z);
+    if (b.face === 'x') board.rotation.y = Math.PI / 2;
     group.add(board);
     const face = new THREE.Mesh(
       new THREE.PlaneGeometry(13, 4.4),
-      new THREE.MeshBasicMaterial({ color: new THREE.Color(b.color) }),
+      new THREE.MeshBasicMaterial({ map: makeBillboardTexture(b.text, b.color, '#14161c') }),
     );
     face.position.set(b.x, 9, b.z + 0.35);
+    if (b.face === 'x') {
+      face.rotation.y = Math.PI / 2;
+      face.position.set(b.x + 0.35, 9, b.z);
+    }
     group.add(face);
+    nightGlow.neon.push(face.material);
     colliders.push({ minX: b.x - 7, maxX: b.x + 7, minZ: b.z - 0.5, maxZ: b.z + 0.5 });
   }
 
@@ -419,7 +596,50 @@ export function buildCity(scene, rng) {
 
   scene.add(group);
 
+  // --- Day / night ----------------------------------------------------------
+  // The cycle runs on game time: a full day is CFG.dayLength seconds. The
+  // game starts in the morning (frac 0.12); dusk falls near frac 0.5 and
+  // midnight sits at 0.75. setDayFrac jumps the clock (screenshots and the
+  // play-test use it) and returns the nightness, 0 by day and 1 at night.
+  let dayFrac = 0.12;
+  let lastNightness = 0;
+
+  function applyDayNight(n) {
+    lastNightness = n;
+    sun.intensity = 1.7 - n * 1.45;
+    sun.color.copy(lerpColor(0xffe2b0, 0x8aa8ff, n));
+    moon.intensity = n * 0.5;
+    hemi.intensity = 0.95 - n * 0.6;
+    scene.fog.color.copy(lerpColor(0xf2c98f, 0x0e1626, n));
+    scene.background.copy(lerpColor(0x9fc4e8, 0x0a1220, n));
+    skyMat.map = n > 0.5 ? nightSkyTex : daySkyTex;
+    skyMat.needsUpdate = true;
+    moonDisc.material.opacity = n;
+    // Windows glow warm after dark; street and dock lamps burn brighter.
+    for (const m of facadeMats) {
+      m.emissive.setHex(0xffd98a);
+      m.emissiveIntensity = n * 0.38;
+    }
+    if (nightGlow.streetLampMat) nightGlow.streetLampMat.emissiveIntensity = 0.5 + n * 1.6;
+    if (nightGlow.lamps) nightGlow.lamps.emissiveIntensity = 0.5 + n * 1.6;
+  }
+
+  function nightness() {
+    return nightnessAt(dayFrac);
+  }
+
+  function setDayFrac(f) {
+    dayFrac = ((f % 1) + 1) % 1;
+    applyDayNight(nightnessAt(dayFrac));
+    return lastNightness;
+  }
+
   function animate(dt, t) {
+    dayFrac = (dayFrac + dt / CFG.dayLength) % 1;
+    applyDayNight(nightnessAt(dayFrac));
+    // Rooftop beacons and the yacht's navigation light blink.
+    const blink = Math.sin(t * 3) > 0 ? 1 : 0.25;
+    for (const b of nightGlow.beacons) b.material.opacity = 0.25 + 0.75 * blink * (0.35 + 0.65 * lastNightness);
     for (const a of animated) {
       if (a.kind === 'wheel') a.obj.rotation.z += dt * 0.12;
       else if (a.kind === 'beam') a.obj.rotation.y = t * 0.5;
@@ -433,7 +653,9 @@ export function buildCity(scene, rng) {
     }
   }
 
-  return { colliders, landmarks, group, animate };
+  applyDayNight(nightnessAt(dayFrac));
+
+  return { colliders, landmarks, group, animate, setDayFrac, nightness, dayFrac: () => dayFrac };
 }
 
 function makeTree(x, z, rng) {

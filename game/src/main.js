@@ -1,14 +1,16 @@
-// Solmar Bay: Heatwave v2 — bootstrap, game loop, camera, car enter/exit
-// and the menu / playing / paused / busted / wasted state machine. v2 wires
-// in the effects pool, the side activities, the Marina sports car, weapon
-// switching, the mission tracker, the horn and tyre smoke.
+// Solmar Bay: Heatwave v3 — bootstrap, game loop, camera, car enter/exit
+// and the menu / playing / paused / busted / wasted state machine. v3 wires
+// in the dynamic crime system, the day/night cycle, the casino's luxury
+// sports cars, drift and the police chase that loses the trail, the Marina
+// Heist, and the presentation polish (cash popups, wanted pulse, crime and
+// day/night readouts).
 import { CFG } from './config.js';
 import { Rng } from './random.js';
 import { Input } from './input.js';
 import { SoundBank } from './audio.js';
 import { buildCity, collideCircle } from './city.js';
 import { Player, lerpAngle } from './player.js';
-import { Car, spawnTraffic, spawnParked, spawnMarinaSports } from './vehicles.js';
+import { Car, spawnTraffic, spawnParked, spawnMarinaSports, spawnCasinoSports } from './vehicles.js';
 import { Pedestrians } from './pedestrians.js';
 import { Police } from './police.js';
 import { Combat } from './combat.js';
@@ -17,6 +19,7 @@ import { SideActivities } from './side.js';
 import { Effects } from './effects.js';
 import { HUD } from './hud.js';
 import { Save } from './save.js';
+import { CrimeSystem } from './crime.js';
 import { applyShot } from './shots.js';
 
 const canvas = document.getElementById('game');
@@ -32,7 +35,7 @@ const city = buildCity(scene, rng);
 const { colliders, landmarks } = city;
 
 const world = {
-  scene, camera, renderer, colliders, landmarks,
+  scene, camera, renderer, colliders, landmarks, city,
   state: 'menu',
   input: new Input(),
   sound: new SoundBank(),
@@ -52,12 +55,14 @@ world.player = new Player(scene, landmarks.spawn);
 world.traffic = spawnTraffic(scene, rng);
 world.parkedCars = spawnParked(scene, rng);
 world.marinaSports = spawnMarinaSports(scene, landmarks);
-world.allCars = [...world.traffic, ...world.parkedCars, world.marinaSports];
+world.casinoSports = spawnCasinoSports(scene, landmarks);
+world.allCars = [...world.traffic, ...world.parkedCars, world.marinaSports, ...world.casinoSports];
 world.peds = new Pedestrians(scene, rng, colliders);
 world.police = new Police(scene);
 world.combat = new Combat(scene);
 world.missions = new Missions(scene, landmarks);
 world.side = new SideActivities(scene, landmarks, rng);
+world.crime = new CrimeSystem(scene, landmarks, rng);
 world.save = new Save(world);
 
 // --- Car enter / exit -------------------------------------------------------
@@ -208,8 +213,16 @@ function updateCamera(dt) {
   const cx = target.x + Math.sin(world.camYaw) * d * Math.cos(world.camPitch);
   const cz = target.z + Math.cos(world.camYaw) * d * Math.cos(world.camPitch);
   const cy = target.y + height + Math.sin(world.camPitch) * d * 0.6;
-  const look = new THREE.Vector3(target.x, target.y + 1.6, target.z);
-  camera.position.lerp(new THREE.Vector3(cx, cy, cz), Math.min(1, dt * 8));
+  // Speed-based look-ahead: at speed the camera looks further up the road,
+  // and it settles more slowly, so fast driving feels fast.
+  const speed01 = driving ? Math.min(1, Math.abs(p.inCar.speed) / p.inCar.tune.topSpeed) : 0;
+  const lookAhead = driving ? speed01 * 9 : 0;
+  const look = new THREE.Vector3(
+    target.x + (driving ? p.inCar.forward.x * lookAhead : 0),
+    target.y + 1.6,
+    target.z + (driving ? p.inCar.forward.z * lookAhead : 0),
+  );
+  camera.position.lerp(new THREE.Vector3(cx, cy, cz), Math.min(1, dt * (8 - speed01 * 3)));
   if (world.shake > 0) {
     camera.position.x += (Math.random() - 0.5) * world.shake;
     camera.position.y += (Math.random() - 0.5) * world.shake;
@@ -238,8 +251,9 @@ function frame(now) {
     }
     if (input.consume('KeyM')) world.hud.toggleTracker(world);
     // E does one thing per press: talk to a mission contact first, then
-    // enter or exit a car. The talk takes priority, so a press next to a
-    // contact never just opens a car door — on foot or from the driver's seat.
+    // rob the ATM at the bank, then enter or exit a car. The talk takes
+    // priority, so a press next to a contact never just opens a car door —
+    // on foot or from the driver's seat.
     const step = world.missions.currentStep();
     const isTalk = step && step.type === 'talk' && step.target;
     let nearTalk = false;
@@ -247,11 +261,17 @@ function frame(now) {
       const pp = p.inCar ? p.inCar.pos : p.pos;
       nearTalk = Math.hypot(pp.x - step.target.x, pp.z - step.target.z) < step.radius;
     }
+    const nearAtm = !p.inCar && Math.hypot(p.pos.x - world.crime.atmPos.x, p.pos.z - world.crime.atmPos.z) < 4;
+    if (nearAtm) world.hud.setPrompt('Press E — rob the ATM (+$250, +2 wanted)');
     if (!nearTalk) {
-      if (!p.inCar) {
+      // One E press, routed once: the ATM first, then a car.
+      const ePressed = input.consume('KeyE');
+      if (ePressed && nearAtm && world.crime.robAtm(world)) {
+        // Robbed — the press is spent.
+      } else if (ePressed && !p.inCar) {
         const nearCar = nearestCar(3.4);
-        if (nearCar && input.consume('KeyE')) world.enterCar(nearCar, false);
-      } else if (input.consume('KeyE')) {
+        if (nearCar) world.enterCar(nearCar, false);
+      } else if (ePressed && p.inCar) {
         world.exitCar();
       }
     }
@@ -278,9 +298,17 @@ function frame(now) {
       const res = car.drive(throttle, -steerInput, dt, colliders, world.allCars);
       if (res && res.crashed) {
         world.sound.crash();
-        world.shake = 0.5;
+        // The camera shake scales with the impact — a tap shudders, a
+        // 30 km/h wall hit rattles the whole frame.
+        world.shake = Math.min(1.2, 0.25 + res.impact * 0.03);
         world.effects.sparks(car.pos.clone().setY(1));
         p.damage(2);
+      }
+      // A drift lays down thick smoke and sparks at the rear wheels.
+      if (car.drifting) {
+        const back = car.pos.clone().addScaledVector(car.forward, -1.8);
+        world.effects.driftSmoke(back);
+        if (Math.random() < 0.4) world.sound.skid();
       }
       // Hard cornering or braking at speed lays down tyre smoke.
       if (Math.abs(car.speed) > 14 && (Math.abs(steerInput) > 0.7 || (throttle < 0 && car.speed > 10))) {
@@ -315,6 +343,7 @@ function frame(now) {
     world.combat.update(dt, world);
     world.missions.update(dt, world);
     world.side.update(dt, world);
+    world.crime.update(dt, world);
     world.effects.update(dt);
     if (world.gunshotTimer > 0) world.gunshotTimer -= dt;
     if (p.health <= 0) endGame('wasted');
@@ -424,6 +453,27 @@ window.__solmar = {
     return g ? { x: g.position.x, z: g.position.z } : null;
   },
   collectibleIds: () => [...world.side.collectibleMeshes.keys()],
+  // v3 hooks: the day/night clock, the ATM, the crime system, drift and crouch.
+  setDayFrac: (f) => world.city.setDayFrac(f),
+  robAtm: () => world.crime.robAtm(world),
+  forceCrime: (type) => world.crime.forceCrime(type, world),
+  clearCrime: () => world.crime.clearCrime(world),
+  get crime() {
+    const c = world.crime;
+    return {
+      active: !!c.event, type: c.event ? c.event.type : null,
+      interventions: c.interventions, eventsSeen: c.eventsSeen,
+    };
+  },
+  crimePos: () => {
+    const pos = world.crime.eventPos();
+    return pos ? { x: pos.x, z: pos.z } : null;
+  },
+  get drifting() {
+    const car = world.player.inCar;
+    return { drifting: !!(car && car.drifting), speed: car ? Math.abs(car.speed) : 0 };
+  },
+  crouch: (on) => { world.player.crouchForced = !!on; return world.player.crouchForced; },
 };
 
 requestAnimationFrame(frame);
