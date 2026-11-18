@@ -1,5 +1,7 @@
-// Keyboard + mouse input. Tracks held keys and edge-triggered presses
+// Keyboard + mouse input v2. Tracks held keys and edge-triggered presses
 // (consume() reports a key once, so E / R / Escape fire a single action).
+// New in v2: M opens the mission tracker, 1/2/3 pick a weapon, Q cycles
+// weapons, H honks the horn, and T works the side activities (taxi, race).
 export class Input {
   constructor() {
     this.down = new Set();
@@ -29,9 +31,15 @@ export class Input {
     canvas.addEventListener('pointerdown', (e) => {
       this.dragging = true;
       canvas.setPointerCapture(e.pointerId);
+      // Track mouse buttons so Mouse0 (punch) and Mouse2 (shoot) work.
+      const code = e.button === 2 ? 'Mouse2' : 'Mouse0';
+      this.down.add(code);
+      this.pressed.add(code);
     });
-    canvas.addEventListener('pointerup', () => {
+    canvas.addEventListener('pointerup', (e) => {
       this.dragging = false;
+      const code = e.button === 2 ? 'Mouse2' : 'Mouse0';
+      this.down.delete(code);
     });
     canvas.addEventListener('pointermove', (e) => {
       if (!this.dragging) return;
@@ -65,6 +73,14 @@ export class Input {
     if (this.held('KeyW') || this.held('ArrowUp')) y += 1;
     if (this.held('KeyS') || this.held('ArrowDown')) y -= 1;
     return { x, y };
+  }
+
+  // The weapon key the player just pressed, if any.
+  weaponKey() {
+    if (this.consume('Digit1')) return 'pistol';
+    if (this.consume('Digit2')) return 'shotgun';
+    if (this.consume('Digit3')) return 'smg';
+    return null;
   }
 
   endFrame() {

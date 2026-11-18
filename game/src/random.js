@@ -1,5 +1,6 @@
-// Deterministic random numbers: the city, traffic and pedestrians are built
-// from one seed, so every load (and every screenshot) sees the same Solmar Bay.
+// Seeded randomness: the city, traffic, pedestrians and collectibles are
+// all built from one seed, so every load — and every screenshot — sees the
+// same Solmar Bay. Nothing in the game reads Math.random() for layout.
 export function mulberry32(seed) {
   let a = seed >>> 0;
   return function next() {
@@ -26,5 +27,20 @@ export class Rng {
   }
   chance(p) {
     return this.next() < p;
+  }
+  // A shuffled copy of a list (Fisher–Yates, driven by this seed).
+  shuffle(list) {
+    const out = list.slice();
+    for (let i = out.length - 1; i > 0; i--) {
+      const j = Math.floor(this.next() * (i + 1));
+      const tmp = out[i];
+      out[i] = out[j];
+      out[j] = tmp;
+    }
+    return out;
+  }
+  // A value with a bell-ish spread around the middle, for natural variety.
+  around(mid, spread) {
+    return mid + (this.next() + this.next() - 1) * spread;
   }
 }

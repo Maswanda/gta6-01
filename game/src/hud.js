@@ -1,21 +1,24 @@
-// HUD: cash, wanted stars, health, ammo, speed, mission objective, the
-// minimap, prompts and banners — all DOM + one 2D canvas, drawn every frame
+// HUD v2: cash, wanted stars, health and stamina, the current weapon,
+// speed, the mission objective, a mission tracker (M lists every job with
+// its status), and a bigger minimap with district names, collectible dots
+// and side-activity markers — all DOM + one 2D canvas, drawn every frame
 // from the live game state. Also owns the start / pause / busted screens.
-import { CFG, STREET_LINES } from './config.js';
+import { CFG, STREET_LINES, districtAt } from './config.js';
 
 export class HUD {
   constructor() {
     this.el = {};
-    for (const id of ['cash', 'stars', 'health-fill', 'health-num', 'ammo', 'speed',
-      'objective', 'objective-text', 'objective-dist', 'prompt', 'message', 'banner', 'banner-title',
-      'banner-sub', 'menu', 'pause', 'end', 'end-title', 'end-sub', 'minimap',
-      'mission-list', 'timer', 'save-note', 'btn-continue']) {
+    for (const id of ['cash', 'stars', 'health-fill', 'health-num', 'stamina-fill', 'stamina-num',
+      'ammo', 'weapon', 'speed', 'district', 'objective', 'objective-text', 'objective-dist',
+      'prompt', 'message', 'banner', 'banner-title', 'banner-sub', 'menu', 'pause', 'end',
+      'end-title', 'end-sub', 'minimap', 'mission-list', 'timer', 'save-note', 'btn-continue']) {
       this.el[id] = document.getElementById(id);
     }
     this.minimap = this.el.minimap.getContext('2d');
     this.messageTimer = 0;
     this.bannerTimer = 0;
     this.promptText = '';
+    this.trackerOpen = false;
     document.getElementById('btn-start').addEventListener('click', () => this.onStart && this.onStart(false));
     document.getElementById('btn-continue').addEventListener('click', () => this.onStart && this.onStart(true));
     document.getElementById('btn-resume').addEventListener('click', () => this.onResume && this.onResume());
@@ -75,10 +78,29 @@ export class HUD {
     setTimeout(() => { this.el['save-note'].textContent = ''; }, 2500);
   }
 
+  toggleTracker(world) {
+    this.trackerOpen = !this.trackerOpen;
+    if (!this.trackerOpen) {
+      this.el['mission-list'].style.display = 'none';
+      return;
+    }
+    const m = world.missions;
+    const rows = m.defs.map((d, i) => {
+      const mark = m.done || i < m.index ? '✓' : i === m.index ? '▶' : '🔒';
+      const cls = m.done || i < m.index ? 'done' : i === m.index ? 'active' : 'locked';
+      return `<div class="${cls}">${mark} ${d.title} — $${d.reward}</div>`;
+    }).join('');
+    const side = world.side;
+    const coins = `Solmar coins ${side.collected.size}/${CFG.collectibleCount}`;
+    const taxi = side.taxiBest ? `Taxi best ${Math.round(side.taxiBest)}s (${side.taxiRuns} runs)` : 'Taxi — not run yet';
+    const race = side.raceBest ? `Race best ${Math.round(side.raceBest)}s (${side.raceRuns} runs)` : 'Street race — not run yet';
+    this.el['mission-list'].innerHTML = `<b>STORY</b>${rows}<b>SIDE JOBS</b><div>${coins}</div><div>${taxi}</div><div>${race}</div>`;
+    this.el['mission-list'].style.display = 'block';
+  }
+
   update(dt, world) {
     const p = world.player;
     this.el.cash.textContent = `$${p.cash.toLocaleString('en-US')}`;
-    // Wanted stars: filled ★ for heat, empty ☆ for the rest.
     let stars = '';
     for (let i = 0; i < CFG.maxWanted; i++) stars += i < world.police.wanted ? '★' : '☆';
     this.el.stars.textContent = stars;
@@ -86,28 +108,36 @@ export class HUD {
     this.el['health-fill'].style.width = `${Math.max(0, p.health)}%`;
     this.el['health-fill'].style.background = p.health > 50 ? '#58c96b' : p.health > 25 ? '#e8a33a' : '#d83a3a';
     this.el['health-num'].textContent = `${Math.ceil(Math.max(0, p.health))}`;
-    this.el.ammo.textContent = p.inCar ? '—' : `🔫 ${world.combat.ammo} / ${world.combat.reserve}`;
+    this.el['stamina-fill'].style.width = `${Math.max(0, p.stamina)}%`;
+    this.el['stamina-num'].textContent = p.sprinting ? 'SPRINT' : '';
+    const w = world.combat;
+    this.el.weapon.textContent = p.inCar
+      ? (p.inCar.label || 'Car')
+      : `${w.def.name}  ${w.ammo[w.weapon]} / ${w.reserve[w.weapon]}`;
+    this.el.ammo.textContent = p.inCar ? '—' : `🔫 ${w.ammo[w.weapon]} / ${w.reserve[w.weapon]}`;
     const speed = p.inCar ? Math.abs(p.inCar.speed) * 3.6 : Math.abs(p.speed) * 3.6;
     this.el.speed.textContent = `${Math.round(speed)} km/h`;
+    const pp = p.inCar ? p.inCar.pos : p.pos;
+    this.el.district.textContent = districtAt(pp.x, pp.z);
     // Objective + distance.
     const m = world.missions;
     this.el['objective-text'].textContent = m.objectiveText();
     const target = m.targetPoint();
     if (target) {
-      const pp = p.inCar ? p.inCar.pos : p.pos;
       const d = Math.hypot(pp.x - target.x, pp.z - target.z);
       this.el['objective-dist'].textContent = `${Math.round(d)} m`;
     } else {
       this.el['objective-dist'].textContent = '';
     }
-    // Timer on timed steps.
+    // Timer on timed steps, the taxi and the race.
     const s = m.currentStep();
-    this.el.timer.textContent = s && s.type === 'deliver' && m.timer > 0
-      ? `⏱ ${Math.ceil(m.timer)}s` : '';
-    // Prompt (E to talk / enter car), set fresh each frame.
+    let timerText = '';
+    if (s && (s.type === 'deliver' || s.type === 'race') && m.timer > 0) timerText = `⏱ ${Math.ceil(m.timer)}s`;
+    else if (world.side.taxi.state === 'deliver') timerText = `🚕 ${Math.ceil(world.side.taxi.timer)}s`;
+    else if (world.side.race.state === 'racing') timerText = `🏁 ${Math.ceil(world.side.race.timer)}s`;
+    this.el.timer.textContent = timerText;
     this.el.prompt.textContent = this.promptText;
     this.promptText = '';
-    // Message + banner fade.
     if (this.messageTimer > 0) {
       this.messageTimer -= dt;
       if (this.messageTimer <= 0) this.el.message.style.opacity = '0';
@@ -121,11 +151,11 @@ export class HUD {
 
   drawMinimap(world) {
     const c = this.minimap;
-    const S = 190;
+    const S = 220;
     const scale = S / (CFG.worldHalf * 2 + 40);
     const toX = (x) => (x + CFG.worldHalf + 20) * scale;
     const toZ = (z) => (z + CFG.worldHalf + 20) * scale;
-    c.fillStyle = 'rgba(12, 16, 22, 0.85)';
+    c.fillStyle = 'rgba(12, 16, 22, 0.88)';
     c.fillRect(0, 0, S, S);
     // Blocks.
     c.fillStyle = '#3a3f47';
@@ -139,6 +169,44 @@ export class HUD {
     // Sea.
     c.fillStyle = '#1e5a7a';
     c.fillRect(0, toZ(CFG.worldHalf), S, S - toZ(CFG.worldHalf));
+    // District names.
+    c.fillStyle = 'rgba(255,255,255,0.55)';
+    c.font = 'bold 10px sans-serif';
+    c.fillText('NORTHSIDE', toX(-60), toZ(-190));
+    c.fillText('OLD TOWN', toX(-200), toZ(-40));
+    c.fillText('DOWNTOWN', toX(-40), toZ(-20));
+    c.fillText('MARINA', toX(-30), toZ(210));
+    // Collectible coins not yet found.
+    c.fillStyle = '#ffc23a';
+    for (const [id, g] of world.side.collectibleMeshes) {
+      if (world.side.collected.has(id)) continue;
+      c.beginPath();
+      c.arc(toX(g.position.x), toZ(g.position.z), 2.5, 0, Math.PI * 2);
+      c.fill();
+    }
+    // Taxi passenger / destination.
+    if (world.side.taxi.state === 'pickup' && world.side.taxi.passenger) {
+      c.fillStyle = '#39d0ff';
+      c.beginPath();
+      c.arc(toX(world.side.taxi.passenger.x), toZ(world.side.taxi.passenger.z), 4, 0, Math.PI * 2);
+      c.fill();
+    }
+    if (world.side.taxi.state === 'deliver' && world.side.taxi.dest) {
+      c.fillStyle = '#39d0ff';
+      c.beginPath();
+      c.arc(toX(world.side.taxi.dest.x), toZ(world.side.taxi.dest.z), 4, 0, Math.PI * 2);
+      c.fill();
+    }
+    // Race checkpoints.
+    if (world.side.race.state === 'racing') {
+      c.fillStyle = '#ff5a4a';
+      world.side.raceRings.forEach((r, i) => {
+        if (i < world.side.race.index) return;
+        c.beginPath();
+        c.arc(toX(r.pt.x), toZ(r.pt.z), 4, 0, Math.PI * 2);
+        c.fill();
+      });
+    }
     // Mission target.
     const target = world.missions.targetPoint();
     if (target) {
@@ -175,7 +243,6 @@ export class HUD {
     c.closePath();
     c.fill();
     c.restore();
-    // North marker.
     c.fillStyle = '#ffffff';
     c.font = 'bold 11px sans-serif';
     c.fillText('N', 4, 12);

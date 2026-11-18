@@ -1,6 +1,8 @@
-// Saving: cash, story progress and ammo persist in localStorage so the
-// player can continue after closing the tab. Autosaves on mission complete.
-const KEY = 'solmar-bay-heatwave-save-v1';
+// Saving v2: cash, story progress, weapons and side-activity results
+// persist in localStorage so the player can continue after closing the tab.
+// Autosaves on mission complete and on every side-job payout. The v2 key is
+// separate from v1's, so an old save never loads into the new story.
+const KEY = 'solmar-bay-heatwave-save-v2';
 
 export class Save {
   constructor(world) {
@@ -22,9 +24,12 @@ export class Save {
         cash: w.player.cash,
         missionIndex: w.missions.index,
         done: w.missions.done,
+        weapon: w.combat.weapon,
+        unlocked: w.combat.unlocked,
         ammo: w.combat.ammo,
         reserve: w.combat.reserve,
         health: w.player.health,
+        side: w.side.getSave(),
         savedAt: Date.now(),
       };
       localStorage.setItem(KEY, JSON.stringify(data));
@@ -42,11 +47,14 @@ export class Save {
       const w = this.world;
       w.player.cash = d.cash || 0;
       w.player.health = d.health || 100;
-      w.combat.ammo = d.ammo ?? 12;
-      w.combat.reserve = d.reserve ?? 48;
+      w.combat.weapon = d.weapon || 'pistol';
+      w.combat.unlocked = d.unlocked || { pistol: true, shotgun: false, smg: false };
+      w.combat.ammo = d.ammo || { pistol: 12, shotgun: 6, smg: 30 };
+      w.combat.reserve = d.reserve || { pistol: 48, shotgun: 18, smg: 90 };
       w.missions.index = Math.min(d.missionIndex || 0, w.missions.defs.length - 1);
       w.missions.done = !!d.done;
       w.missions.step = 0;
+      w.side.applySave(d.side);
       return true;
     } catch {
       return false;

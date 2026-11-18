@@ -1,6 +1,7 @@
 // All sound is synthesised with WebAudio — no audio files, no network.
-// Engine hum, sirens, gunshots, punches and mission jingles, built from
-// oscillators and filtered noise, started only after a user gesture.
+// v2 adds a wanted sting, a pickup chime, a car horn, tyre skid, a door
+// slam, race countdown beeps and a low ambient pad that hums under the city,
+// on top of the engine, siren, gunshots, punches and mission jingles.
 export class SoundBank {
   constructor() {
     this.ctx = null;
@@ -10,6 +11,8 @@ export class SoundBank {
     this.sirenOsc = null;
     this.sirenGain = null;
     this.sirenTimer = 0;
+    this.padOsc = null;
+    this.padGain = null;
     this.enabled = true;
   }
 
@@ -47,6 +50,20 @@ export class SoundBank {
       this.sirenOsc.connect(this.sirenGain);
       this.sirenGain.connect(this.master);
       this.sirenOsc.start();
+      // Ambient pad: two detuned triangles, very quiet, always on.
+      this.padOsc = this.ctx.createOscillator();
+      this.padOsc.type = 'triangle';
+      this.padOsc.frequency.value = 110;
+      const padOsc2 = this.ctx.createOscillator();
+      padOsc2.type = 'triangle';
+      padOsc2.frequency.value = 164.8;
+      this.padGain = this.ctx.createGain();
+      this.padGain.gain.value = 0.02;
+      this.padOsc.connect(this.padGain);
+      padOsc2.connect(this.padGain);
+      this.padGain.connect(this.master);
+      this.padOsc.start();
+      padOsc2.start();
     } catch {
       this.ctx = null;
     }
@@ -119,14 +136,50 @@ export class SoundBank {
     this.noiseBurst(0.25, 0.4, 900);
   }
 
+  skid() {
+    this.noiseBurst(0.18, 0.16, 2400);
+  }
+
+  horn() {
+    this.blip(370, 0.28, 'square', 0.22);
+    this.blip(466, 0.28, 'square', 0.18);
+  }
+
+  door() {
+    this.noiseBurst(0.08, 0.3, 700);
+    this.blip(90, 0.1, 'sine', 0.3);
+  }
+
   chime() {
     this.blip(880, 0.12, 'sine', 0.25);
     setTimeout(() => this.blip(1318, 0.18, 'sine', 0.22), 90);
   }
 
+  pickup() {
+    this.blip(1046, 0.1, 'triangle', 0.25);
+    setTimeout(() => this.blip(1568, 0.16, 'triangle', 0.22), 80);
+  }
+
+  sting() {
+    // A short dramatic hit when the wanted level jumps.
+    this.blip(220, 0.25, 'sawtooth', 0.2);
+    this.blip(233, 0.25, 'sawtooth', 0.2);
+    this.blip(110, 0.35, 'sawtooth', 0.18);
+  }
+
+  countdownBeep(final) {
+    this.blip(final ? 880 : 440, final ? 0.3 : 0.14, 'square', 0.22);
+  }
+
   jingle() {
     const notes = [523, 659, 784, 1046];
     notes.forEach((n, i) => setTimeout(() => this.blip(n, 0.22, 'triangle', 0.28), i * 110));
+  }
+
+  fanfare() {
+    // A longer mission-complete fanfare.
+    const notes = [523, 659, 784, 1046, 784, 1046, 1318];
+    notes.forEach((n, i) => setTimeout(() => this.blip(n, 0.24, 'triangle', 0.26), i * 120));
   }
 
   busted() {

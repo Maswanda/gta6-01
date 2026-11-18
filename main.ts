@@ -1,22 +1,31 @@
-// Solmar Bay: Heatwave — the entry program (Node 22, standard library only).
+// Solmar Bay: Heatwave v2 — the entry program (Node 22, standard library only).
 // The game is this directory's game/ folder: plain static files a desktop
 // browser loads offline (game/index.html, its ES modules and the vendored
 // three.js build — no network request anywhere), plus 4 screenshots of the
 // game itself. This program hands it in: it copies game/ and screenshots/
 // from beside this file to /output and writes /output/dossier.json, the
-// summary the judge reads, with the vendored make.fun library.
+// summary the judge reads, with the vendored make.fun library. v2's game is
+// bigger — nine story missions, three side activities, four vehicle types,
+// three weapons and four districts — but the hand-in is the same shape.
 //
 // Serve it locally with `node serve.ts`, then open http://localhost:8080.
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
 
-import { cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildDossier } from './vendor/makefun-game.ts';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
 const out = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
+
+// A quick sanity pass before copying: the entry is a playable game only if
+// its page, its modules and its screenshots are all really there.
+const index = join(here, 'game', 'index.html');
+if (!existsSync(index) || statSync(index).size === 0) throw new Error('game/index.html is missing');
+const shots = existsSync(join(here, 'screenshots')) ? readdirSync(join(here, 'screenshots')) : [];
+if (shots.length < 3 || shots.length > 4) throw new Error(`expected 3 or 4 screenshots, found ${shots.length}`);
 
 mkdirSync(out, { recursive: true });
 cpSync(join(here, 'game'), join(out, 'game'), { recursive: true });
@@ -37,3 +46,5 @@ writeFileSync(
     game_path_max_bytes: 1000,
   }),
 );
+
+console.log(`Solmar Bay v2 handed in: ${shots.length} screenshots, dossier written to ${join(out, 'dossier.json')}`);

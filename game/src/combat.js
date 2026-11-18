@@ -1,18 +1,54 @@
-// Combat: fists and the pistol. Punching is a short-range swing with
-// knockback; the pistol is a hitscan raycast with a magazine, reload and
-// muzzle feedback. Enemies (the Kestrel crew) use the same health pool.
-import { CFG } from './config.js';
+// Combat v2: fists plus three guns — pistol, shotgun and SMG — with per-
+// weapon magazines, switching on 1/2/3 (Q cycles), and two enemy kinds: the
+// Kestrel brawlers who close in and swing, and the shooters who keep their
+// distance and fire back. Muzzle flashes and takedown bursts run through
+// the effects pool.
+import { CFG, WEAPONS } from './config.js';
 
 export class Combat {
   constructor(scene) {
     this.scene = scene;
-    this.ammo = CFG.magSize;
-    this.reserve = 48;
+    this.weapon = 'pistol';
+    this.unlocked = { pistol: true, shotgun: false, smg: false };
+    this.ammo = { pistol: CFG.magSize, shotgun: CFG.shotgunMag, smg: CFG.smgMag };
+    this.reserve = { pistol: 48, shotgun: 18, smg: 90 };
     this.punchTimer = 0;
     this.shootTimer = 0;
     this.tracer = null;
     this.tracerTimer = 0;
     this.enemies = [];
+  }
+
+  get def() {
+    return WEAPONS[this.weapon];
+  }
+
+  get mag() {
+    return this.ammo[this.weapon];
+  }
+
+  get spare() {
+    return this.reserve[this.weapon];
+  }
+
+  unlock(name, world) {
+    if (this.unlocked[name]) return;
+    this.unlocked[name] = true;
+    world.hud.flashMessage(`New weapon unlocked: ${WEAPONS[name].name} — press ${name === 'shotgun' ? '2' : '3'} to use it`);
+    world.sound.jingle();
+  }
+
+  switchWeapon(name, world) {
+    if (!this.unlocked[name] || this.weapon === name) return;
+    this.weapon = name;
+    world.hud.flashMessage(`${WEAPONS[name].name} ready — ${this.ammo[name]}/${this.reserve[name]} rounds`);
+    world.sound.blip(660, 0.06, 'square', 0.15);
+  }
+
+  cycleWeapon(world) {
+    const order = ['pistol', 'shotgun', 'smg'].filter((w) => this.unlocked[w]);
+    const i = order.indexOf(this.weapon);
+    this.switchWeapon(order[(i + 1) % order.length], world);
   }
 
   update(dt, world) {
@@ -25,7 +61,6 @@ export class Combat {
         this.tracer = null;
       }
     }
-    // Enemies: close in and swing; they telegraph with a red marker.
     const player = world.player;
     const pp = player.inCar ? player.inCar.pos : player.pos;
     for (const e of this.enemies) {
@@ -34,20 +69,38 @@ export class Combat {
       const dz = pp.z - e.pos.z;
       const d = Math.hypot(dx, dz);
       e.attackTimer -= dt;
-      if (d > 2.2) {
-        const sp = 3.4;
-        e.pos.x += (dx / d) * sp * dt;
-        e.pos.z += (dz / d) * sp * dt;
+      if (e.kind === 'shooter') {
+        // Keep a firing distance, strafe a little, shoot when in range.
+        if (d > 16) {
+          e.pos.x += (dx / d) * 3.0 * dt;
+          e.pos.z += (dz / d) * 3.0 * dt;
+        } else if (d < 8) {
+          e.pos.x -= (dx / d) * 2.0 * dt;
+          e.pos.z -= (dz / d) * 2.0 * dt;
+        }
         e.heading = Math.atan2(dx, dz);
-      } else if (e.attackTimer <= 0) {
-        e.attackTimer = 1.1;
-        player.damage(9);
-        world.hud.flashMessage('Kestrel crew hit you!');
-        world.sound.punch();
+        if (e.attackTimer <= 0 && d < 26) {
+          e.attackTimer = 1.6;
+          world.sound.shot();
+          world.effects.muzzle(e.pos.clone().setY(1.4), e.pos.clone().sub(pp).normalize().multiplyScalar(-1));
+          player.damage(7);
+          world.hud.flashMessage('Kestrel shooter hit you!');
+        }
+      } else {
+        if (d > 2.2) {
+          const sp = 3.4;
+          e.pos.x += (dx / d) * sp * dt;
+          e.pos.z += (dz / d) * sp * dt;
+          e.heading = Math.atan2(dx, dz);
+        } else if (e.attackTimer <= 0) {
+          e.attackTimer = 1.1;
+          player.damage(9);
+          world.hud.flashMessage('Kestrel crew hit you!');
+          world.sound.punch();
+        }
       }
       e.mesh.position.copy(e.pos);
       e.mesh.rotation.y = e.heading;
-      // Walk swing.
       const t = performance.now() / 1000;
       e.mesh.children.forEach((c, i) => {
         if (c.geometry && c.geometry.type === 'BoxGeometry' && c.position.y < 0.8) {
@@ -84,10 +137,10 @@ export class Combat {
       if (dmg > 0) {
         e.hp -= dmg;
         any = true;
+        world.effects.burst(e.pos, 0xff5a4a, 5, 2, 0.4);
         if (e.hp <= 0) this.dropEnemy(e, world);
       }
     }
-    // Punching a pedestrian is a crime, and they go down.
     if (!any) {
       for (const ped of world.peds.list) {
         if (ped.down > 0) continue;
@@ -108,64 +161,81 @@ export class Combat {
 
   tryShoot(world) {
     if (this.shootTimer > 0 || world.player.inCar) return false;
-    if (this.ammo <= 0) {
+    const def = this.def;
+    if (this.ammo[this.weapon] <= 0) {
       world.hud.flashMessage('Magazine empty — press R to reload');
       world.sound.blip(140, 0.08, 'square', 0.2);
       this.shootTimer = 0.3;
       return false;
     }
-    this.shootTimer = 0.28;
-    this.ammo -= 1;
+    this.shootTimer = def.cooldown;
+    this.ammo[this.weapon] -= 1;
     world.sound.shot();
     world.gunshotTimer = 1.5;
     const p = world.player;
     const f = p.forward;
     const origin = p.pos.clone();
     origin.y = 1.4;
-    // Muzzle flash tracer.
-    const end = origin.clone().addScaledVector(f, CFG.pistolRange);
+    world.effects.muzzle(origin, f);
+    const end = origin.clone().addScaledVector(f, def.range);
     const geo = new THREE.BufferGeometry().setFromPoints([origin, end]);
     this.tracer = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0xffe98a }));
     this.scene.add(this.tracer);
     this.tracerTimer = 0.06;
-    // Hit the closest enemy near the firing line.
-    let best = null;
-    let bestD = Infinity;
-    for (const e of this.enemies) {
-      if (e.hp <= 0) continue;
-      const dx = e.pos.x - p.pos.x;
-      const dz = e.pos.z - p.pos.z;
-      const along = dx * f.x + dz * f.z;
-      const side = Math.abs(dx * f.z - dz * f.x);
-      if (along > 0 && along < CFG.pistolRange && side < 1.4 && along < bestD) {
-        best = e;
-        bestD = along;
+    // Shotgun: several pellets, each with its own spread.
+    const pellets = def.pellets || 1;
+    let hitAny = false;
+    for (let pi = 0; pi < pellets; pi++) {
+      const spread = pellets > 1 ? (Math.random() - 0.5) * 0.22 : 0;
+      const dir = new THREE.Vector3(
+        f.x * Math.cos(spread) - f.z * Math.sin(spread), 0,
+        f.x * Math.sin(spread) + f.z * Math.cos(spread),
+      );
+      let best = null;
+      let bestD = Infinity;
+      for (const e of this.enemies) {
+        if (e.hp <= 0) continue;
+        const dx = e.pos.x - p.pos.x;
+        const dz = e.pos.z - p.pos.z;
+        const along = dx * dir.x + dz * dir.z;
+        const side = Math.abs(dx * dir.z - dz * dir.x);
+        if (along > 0 && along < def.range && side < 1.4 && along < bestD) {
+          best = e;
+          bestD = along;
+        }
+      }
+      if (best) {
+        best.hp -= def.damage;
+        hitAny = true;
+        world.effects.burst(best.pos, 0xff5a4a, 4, 2, 0.35);
+        if (best.hp <= 0) this.dropEnemy(best, world);
       }
     }
-    if (best) {
-      best.hp -= CFG.pistolDamage;
-      world.hud.flashMessage(`Hit! Kestrel down to ${Math.max(0, best.hp)} HP`);
-      if (best.hp <= 0) this.dropEnemy(best, world);
-      return true;
-    }
-    return false;
+    if (hitAny) world.hud.flashMessage('Hit!');
+    return hitAny;
   }
 
   reload(world) {
-    if (this.ammo === CFG.magSize || this.reserve <= 0) return;
-    const need = CFG.magSize - this.ammo;
-    const take = Math.min(need, this.reserve);
-    this.ammo += take;
-    this.reserve -= take;
+    const def = this.def;
+    if (this.ammo[this.weapon] === def.mag || this.reserve[this.weapon] <= 0) return;
+    const need = def.mag - this.ammo[this.weapon];
+    const take = Math.min(need, this.reserve[this.weapon]);
+    this.ammo[this.weapon] += take;
+    this.reserve[this.weapon] -= take;
     world.sound.blip(520, 0.07, 'square', 0.18);
-    world.hud.flashMessage(`Reloaded — ${this.ammo}/${this.reserve} rounds`);
+    world.hud.flashMessage(`Reloaded ${def.name} — ${this.ammo[this.weapon]}/${this.reserve[this.weapon]} rounds`);
   }
 
-  spawnEnemies(world, positions) {
+  // specs: an array of { pos, kind } — 'brawler' closes in and swings,
+  // 'shooter' keeps its distance and fires. Mixed crews are fine.
+  spawnEnemies(world, specs) {
     this.clearEnemies();
-    for (const pos of positions) {
+    for (const spec of specs) {
+      const pos = spec.pos;
+      const kind = spec.kind || 'brawler';
       const g = new THREE.Group();
-      const jacket = new THREE.MeshLambertMaterial({ color: 0x8a2a2a });
+      const isShooter = kind === 'shooter';
+      const jacket = new THREE.MeshLambertMaterial({ color: isShooter ? 0x2a3a5a : 0x8a2a2a });
       const skin = new THREE.MeshLambertMaterial({ color: 0xb07a4a });
       const body = new THREE.Mesh(new THREE.BoxGeometry(0.78, 0.9, 0.42), jacket);
       body.position.y = 1.15;
@@ -179,23 +249,35 @@ export class Combat {
       );
       legs.position.y = 0.35;
       g.add(legs);
-      // Red marker so the player can spot them.
+      if (isShooter) {
+        // A long gun, so the player can tell at a glance.
+        const gun = new THREE.Mesh(
+          new THREE.BoxGeometry(0.12, 0.12, 1.1),
+          new THREE.MeshLambertMaterial({ color: 0x111111 }),
+        );
+        gun.position.set(0.3, 1.2, 0.5);
+        g.add(gun);
+      }
       const ring = new THREE.Mesh(
         new THREE.RingGeometry(0.9, 1.15, 24),
-        new THREE.MeshBasicMaterial({ color: 0xff3333, side: THREE.DoubleSide }),
+        new THREE.MeshBasicMaterial({ color: isShooter ? 0xff8833 : 0xff3333, side: THREE.DoubleSide }),
       );
       ring.rotation.x = -Math.PI / 2;
       ring.position.y = 0.06;
       g.add(ring);
       g.position.copy(pos);
       this.scene.add(g);
-      this.enemies.push({ mesh: g, pos: pos.clone(), heading: 0, hp: 100, attackTimer: 0 });
+      this.enemies.push({
+        mesh: g, pos: pos.clone(), heading: 0,
+        hp: isShooter ? 80 : 100, attackTimer: 0, kind: kind || 'brawler',
+      });
     }
   }
 
   dropEnemy(e, world) {
     e.mesh.rotation.x = -Math.PI / 2;
     e.mesh.position.y = 0.3;
+    world.effects.burst(e.pos, 0xff5a4a, 12, 3, 0.7);
     world.player.cash += 40;
     world.hud.flashMessage('Kestrel down — +$40');
   }

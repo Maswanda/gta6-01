@@ -1,6 +1,8 @@
-// Jax Marlowe on foot: a simple articulated figure (body, head, legs that
-// swing when walking) with camera-relative WASD movement, sprinting and
-// building collision. When driving, the figure hides inside the car.
+// Jax Marlowe on foot v2: an articulated figure (body, head, cap, legs
+// that swing when walking) with camera-relative WASD movement. Sprinting is
+// faster but drains a stamina bar that refills when he walks — so a long
+// chase on foot is a decision, not a default. When driving, the figure
+// hides inside the car.
 import { CFG } from './config.js';
 import { collideCircle } from './city.js';
 
@@ -11,8 +13,10 @@ export class Player {
     this.speed = 0;
     this.health = CFG.playerHealth;
     this.cash = 0;
+    this.stamina = CFG.staminaMax;
     this.inCar = null;
     this.moving = false;
+    this.sprinting = false;
     this.hurtTimer = 0;
     this.mesh = this.buildMesh();
     this.mesh.position.copy(this.pos);
@@ -44,8 +48,7 @@ export class Player {
     this.legR = this.legL.clone();
     this.legR.position.x = 0.18;
     g.add(this.legR);
-    const armMat = jacket;
-    this.armL = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.7, 0.24), armMat);
+    this.armL = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.7, 0.24), jacket);
     this.armL.position.set(-0.48, 1.15, 0);
     g.add(this.armL);
     this.armR = this.armL.clone();
@@ -62,12 +65,14 @@ export class Player {
   update(dt, input, camYaw, colliders, cars) {
     if (this.inCar) return;
     const axes = input.moveAxes();
-    const run = input.held('ShiftLeft') || input.held('ShiftRight');
-    const top = run ? CFG.runSpeed : CFG.walkSpeed;
-    // Forward is away from the camera (camera sits behind the player).
+    const wantRun = input.held('ShiftLeft') || input.held('ShiftRight');
+    // Sprint only while there is stamina left; it refills while walking.
+    this.sprinting = wantRun && this.stamina > 1;
+    if (this.sprinting) this.stamina = Math.max(0, this.stamina - CFG.staminaDrain * dt);
+    else this.stamina = Math.min(CFG.staminaMax, this.stamina + CFG.staminaRegen * dt);
+    const top = this.sprinting ? CFG.runSpeed : CFG.walkSpeed;
     const fx = Math.sin(camYaw);
     const fz = Math.cos(camYaw);
-    // Screen-right for a camera looking along forward: (-cos, +sin).
     const rx = -Math.cos(camYaw);
     const rz = Math.sin(camYaw);
     let mx = fx * axes.y + rx * axes.x;
@@ -105,9 +110,9 @@ export class Player {
     } else {
       this.speed = 0;
     }
-    // Walk-cycle swing.
+    // Walk-cycle swing, faster when sprinting.
     const t = performance.now() / 1000;
-    const swing = this.moving ? Math.sin(t * (run ? 13 : 9)) * 0.55 : 0;
+    const swing = this.moving ? Math.sin(t * (this.sprinting ? 14 : 9)) * 0.55 : 0;
     this.legL.rotation.x = swing;
     this.legR.rotation.x = -swing;
     this.armL.rotation.x = -swing * 0.8;

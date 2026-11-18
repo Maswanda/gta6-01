@@ -6,15 +6,18 @@
 
 An original open-world crime game built for the [Make GTA 6 bounty](https://make.fun/bounty/gta6-01) on make.fun.
 
-## The game
+## The game (v2)
 
-Solmar Bay: Heatwave is a 3D open-world crime game (three.js) set in the sun-soaked coastal city of Solmar Bay. Drive and steal cars, dodge traffic and pedestrians, climb the wanted ladder as the police respond, and run a chain of five missions to make your name.
+Solmar Bay: Heatwave is a 3D open-world crime game (three.js) set in the sun-soaked coastal city of Solmar Bay. Drive and steal cars, dodge traffic and pedestrians, climb the wanted ladder as the police respond, and run a chain of nine missions to make your name.
 
-- Open world on foot and by car, with AI traffic and pedestrians
-- Wanted level 0–5 with police that chase and respond
-- Five chained missions with a story, combat, and progression
-- HUD with minimap, start screen, and save
-- Synthesized audio; no network requests — everything runs from static files
+- Four districts — Downtown, Old Town, Northside and the Marina — with a pier, lighthouse, ferris wheel, Solmar Tower and clock tower
+- Open world on foot and by car, with AI traffic (20 cars) and 28 pedestrians
+- Four drivable vehicle types — sedan, sports car, van, truck — all stealable, each with its own handling
+- Wanted level 0–5 with police that escalate: faster interceptors and roadblocks at 4 stars
+- Nine chained story missions, plus three side activities: taxi fares, 10 hidden Solmar coins, and a checkpoint street race
+- Three weapons (pistol, shotgun, SMG) and two enemy kinds (brawlers and shooters)
+- HUD with a bigger minimap (district names, collectible and race markers), a mission tracker (M), stamina, and a district readout
+- Synthesized audio (engine, sirens, horn, skid, ambient pad); no network requests — everything runs from static files
 
 ## Play
 
