@@ -1,92 +1,91 @@
-// shots.js — The four ?shot= scenes for the competition screenshots.
-// Each stages a deterministic, good-looking frame (seed 11):
-//   showcase — golden hour at the marina, city skyline behind.
-//   heli     — four-star chase, chopper overhead, spotlight on.
-//   combat   — dock shootout, enemies in front of the player.
-//   garage   — Rico's garage with the shop UI open.
-// Staging runs on a fresh page load; the game loop keeps it alive.
-import { TUNE } from './tuning.js';
-import { Car } from './drive.js';
-
-function placePlayer(world, x, z, heading) {
-  const p = world.player;
-  if (p.inCar) {
-    p.inCar = null;
-  }
-  p.pos.set(x, 0, z);
-  p.heading = heading;
-  p.health = 100;
-  p.mesh.position.copy(p.pos);
-  p.mesh.rotation.y = heading;
-}
-
-export function stageShot(world, name) {
-  const L = TUNE.landmarks;
-  world.state = 'playing';
-  world.missions.start();
+// shots.js — Solmar Bay: the ?shot= hook for screenshots.
+// Load the game with ?shot=showcase (or heli, combat, garage) and the
+// game stages that scene, points a cinematic camera, and raises
+// window.__SHOT_READY__ when the frame is ready to capture. The scene
+// is deterministic (fixed positions, golden-hour light), so the same
+// query always stages the same picture. No shot param means normal play.
+export function applyShot(world, query) {
+  const kind = query.get('shot');
+  if (!kind) return false;
+  const seed = Number(query.get('seed') || 11);
+  world.shotMode = true;
+  world.started = true;
   world.hud.showMenu(false);
-  world.radio.start();
-  if (name === 'showcase') {
-    world.city.setDayFrac(0.42);
-    // On the pier boardwalk, looking north at the marina, the boats
-    // and the downtown skyline — the cover frame. The player stands
-    // clear of the pier hut so the figure reads in the frame.
-    placePlayer(world, -52, 300, Math.PI);
-    const c1 = new Car(world, 'sports', 52, 230, Math.PI, 0xf0a500);
-    c1.speed = 12;
-    world.allCars.push(c1);
-    world.scene.setCamera(-58, 8, 320, -20, 2, 210);
-    world.cameraLocked = true;
-    world.hud.toast('Solmar Bay — the city is yours.');
-  } else if (name === 'heli') {
-    world.city.setDayFrac(0.55);
-    const car = new Car(world, 'sports', 0, 0, 0, 0xf0a500);
-    world.allCars.push(car);
-    world.player.inCar = car;
-    car.speed = 18;
-    world.player.pos.set(0, 0, 0);
-    world.player.heading = 0;
-    world.police.setWanted(4);
-    world.heli.forceLaunch();
-    // A pursuit unit alongside for the chase feel.
-    const u = new Car(world, 'sedan', 12, -18, 0, 0xeeeeee, true);
-    u.speed = 18;
-    world.allCars.push(u);
-    world.police.units.push(u);
-    // Elevated three-quarter view: the car, the pursuit unit and the
-    // chopper with its spotlight all in frame.
-    world.scene.setCamera(24, 10, -28, 8, 14, 10);
-    world.cameraLocked = true;
-    world.hud.toast('Four stars — the chopper is overhead.');
-  } else if (name === 'combat') {
-    world.city.setDayFrac(0.35);
-    // Jump the story to M4's shootout so the objective matches, and
-    // hand the player the shotgun the docks job unlocks.
-    world.missions.jumpTo(3, 1);
-    world.unlocked.shotgun = true;
-    world.combat.selectWeapon('shotgun');
-    placePlayer(world, L.docks.x + 10, L.docks.z + 6, Math.atan2(-10, -6));
-    world.police.setWanted(2);
-    world.scene.snapCamera(L.docks.x + 10, L.docks.z + 6, Math.atan2(-10, -6), false);
-    world.cameraLocked = true;
-    world.hud.toast('Dockside trouble — clear them out.');
-  } else if (name === 'garage') {
-    world.city.setDayFrac(0.3);
-    placePlayer(world, L.garage.x - 6, L.garage.z + 6, Math.atan2(6, -6));
-    world.player.cash = 5200;
-    const c1 = new Car(world, 'sedan', L.garage.x - 14, L.garage.z + 4, Math.PI / 2, 0x4a7a9e);
-    const c2 = new Car(world, 'muscle', L.garage.x + 14, L.garage.z + 4, -Math.PI / 2, 0xb03a2e);
-    const c3 = new Car(world, 'sports', L.garage.x, L.garage.z + 12, Math.PI, 0xf0a500);
-    world.allCars.push(c1, c2, c3);
-    // Wide view of the forecourt: the RICO'S GARAGE sign, the three
-    // cars and the player. (The shop UI itself is exercised by the
-    // playtest; the frame shows the garage.)
-    world.scene.setCamera(L.garage.x - 24, 8, L.garage.z + 26, L.garage.x + 2, 4, L.garage.z - 12);
-    world.cameraLocked = true;
-    world.hud.toast('Rico\u2019s Garage — buy, sell, select.');
+  // A staged scene starts the story at mission 1 so the objective reads.
+  if (!world.missions.mission && !world.missions.done) world.missions.startMission(0);
+  const p = world.player;
+  const stage = world.stage;
+  const setCar = (type, x, z, heading) => {
+    const car = world.drive.createCar(type, x, z, heading);
+    world.drive.enterCar(car);
+    return car;
+  };
+  const place = (x, z, heading, hour, wanted) => {
+    world.walker.spawn(x, z, heading);
+    world.hour = hour;
+    world.wanted = wanted;
+    stage.setTimeOfDay(hour);
+  };
+  const lookFrom = (px, py, pz, lx, ly, lz) => stage.setCamera(px, py, pz, lx, ly, lz);
+  if (kind === 'showcase') {
+    // Golden hour at the marina: the bay, the tower, the minimap, the radio.
+    place(-160, 190, Math.PI * 0.85, 17.5, 0);
+    setCar('muscle', -160, 190, Math.PI * 0.85);
+    world.cash = 12900;
+    world.radio.index = 0;
+    world.missions.step = { kind: 'goto', x: -224, z: 224, r: 12, text: 'Meet Mara at the Marina' };
+    lookFrom(-160 - 26, 9, 190 + 26, -160, 2, 190);
+  } else if (kind === 'heli') {
+    // Four-star chase: the air unit overhead, spotlight on, a patrol car alongside.
+    place(-40, -40, Math.PI * 0.25, 19.2, 4);
+    setCar('sedan', -40, -40, Math.PI * 0.25);
+    world.cash = 8600;
+    const cop = world.drive.createCar('sedan', -34, -52, Math.PI * 0.25, { cop: true });
+    world.police.cops.push(cop);
+    const heli = world.helicopter.spawn();
+    heli.x = -40;
+    heli.z = -40;
+    heli.y = 55;
+    heli.mesh.position.set(-40, 55, -40);
+    world.heliLit = true;
+    world.missions.step = { kind: 'goto', x: 224, z: 224, r: 12, text: 'Lose the air unit — reach the Hills', needCar: true };
+    lookFrom(-40 - 30, 12, -40 + 30, -40, 6, -40);
+  } else if (kind === 'combat') {
+    // Dockside shootout: shotgun out, crew in front, wanted stars up.
+    place(-180, -180, Math.PI * 0.75, 18.1, 3);
+    world.combat.giveWeapon('shotgun', 24);
+    world.cash = 5400;
+    for (let i = 0; i < 3; i++) {
+      world.combat.spawnEnemy('gang', -180 + (i - 1) * 5, -180 - 14 - i * 2, { hold: true });
+    }
+    world.missions.step = { kind: 'kill', n: 3, sx: -180, sz: -196, text: 'Clear the Bay Kings at Vice Beach', enemies: [...world.enemies] };
+    lookFrom(-180 - 16, 6, -180 + 18, -180, 1.5, -192);
+  } else if (kind === 'garage') {
+    // Rico's Garage: three rides on the forecourt, the deal on the door.
+    place(-96, 168, Math.PI, 12.0, 0);
+    world.cash = 9800;
+    world.garage.owned = ['sedan', 'muscle', 'taxi'];
+    world.garage.selected = 'muscle';
+    world.garage.spawnOwned('sedan');
+    world.garage.spawnOwned('muscle');
+    world.garage.spawnOwned('taxi');
+    world.missions.step = { kind: 'goto', x: -96, z: 192, r: 12, text: "Rico's Garage — pick a ride" };
+    lookFrom(-96 - 24, 10, 168 + 26, -96, 1.5, 190);
   } else {
-    // Unknown shot name: fall back to showcase.
-    return stageShot(world, 'showcase');
+    return false;
   }
+  // Let the renderer draw a few frames, then raise the flag.
+  world.shotSeed = seed;
+  let frames = 0;
+  const tick = () => {
+    frames++;
+    if (frames >= 4) {
+      window.__SHOT_READY__ = true;
+      document.title = 'SHOT_READY';
+      return;
+    }
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
   return true;
 }

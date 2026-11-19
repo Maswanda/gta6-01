@@ -1,63 +1,68 @@
-// input.js — Keyboard and mouse state for Solmar Bay.
-// Keys are tracked by event.code so WASD, arrows, E/F/G/R/T and the
-// number keys all work the same in a real browser and headless.
-// pressKey / releaseKey let the test harness (and the ?shot= staging)
-// drive the game programmatically.
-export class Input {
+// input.js — Solmar Bay: keyboard and mouse, one pad for the whole game.
+// Tracks held keys and per-frame presses; the game loop calls endFrame()
+// once a tick so a press is seen exactly once.
+export class InputPad {
   constructor() {
-    this.keys = new Set();
-    this.justPressed = new Set();
-    this.mouse = { x: 0, y: 0, down: false };
-    this._onKeyDown = (e) => {
-      if (e.repeat) return;
-      this.keys.add(e.code);
-      this.justPressed.add(e.code);
-    };
-    this._onKeyUp = (e) => {
-      this.keys.delete(e.code);
-    };
-    this._onBlur = () => {
-      this.keys.clear();
-    };
-    this._onMouseMove = (e) => {
-      this.mouse.x = e.clientX;
-      this.mouse.y = e.clientY;
-    };
-    this._onMouseDown = () => {
-      this.mouse.down = true;
-    };
-    this._onMouseUp = () => {
-      this.mouse.down = false;
-    };
-    window.addEventListener('keydown', this._onKeyDown);
-    window.addEventListener('keyup', this._onKeyUp);
-    window.addEventListener('blur', this._onBlur);
-    window.addEventListener('mousemove', this._onMouseMove);
-    window.addEventListener('mousedown', this._onMouseDown);
-    window.addEventListener('mouseup', this._onMouseUp);
+    this.down = new Set();
+    this.hit = new Set();
+    this.mouseDown = false;
+    this.mouseX = 0;
+    this.mouseY = 0;
+    addEventListener('keydown', (e) => {
+      if (!this.down.has(e.code)) this.hit.add(e.code);
+      this.down.add(e.code);
+      if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab'].includes(e.code)) {
+        e.preventDefault();
+      }
+    });
+    addEventListener('keyup', (e) => this.down.delete(e.code));
+    addEventListener('mousedown', (e) => {
+      this.mouseDown = true;
+      this.mouseX = e.clientX;
+      this.mouseY = e.clientY;
+    });
+    addEventListener('mouseup', () => {
+      this.mouseDown = false;
+    });
+    addEventListener('mousemove', (e) => {
+      this.mouseX = e.clientX;
+      this.mouseY = e.clientY;
+    });
+    addEventListener('blur', () => {
+      this.down.clear();
+      this.hit.clear();
+      this.mouseDown = false;
+    });
   }
-  down(code) {
-    return this.keys.has(code);
+  isDown(code) {
+    return this.down.has(code);
   }
-  pressed(code) {
-    return this.justPressed.has(code);
-  }
-  pressKey(code) {
-    this.keys.add(code);
-    this.justPressed.add(code);
-  }
-  releaseKey(code) {
-    this.keys.delete(code);
+  wasPressed(code) {
+    return this.hit.has(code);
   }
   endFrame() {
-    this.justPressed.clear();
+    this.hit.clear();
   }
-  destroy() {
-    window.removeEventListener('keydown', this._onKeyDown);
-    window.removeEventListener('keyup', this._onKeyUp);
-    window.removeEventListener('blur', this._onBlur);
-    window.removeEventListener('mousemove', this._onMouseMove);
-    window.removeEventListener('mousedown', this._onMouseDown);
-    window.removeEventListener('mouseup', this._onMouseUp);
+  // Let an autopilot (or a test) press keys without a keyboard.
+  inject(code, down) {
+    if (down) this.down.add(code);
+    else this.down.delete(code);
+  }
+  // -1..1 steering / movement axes from WASD or arrows.
+  moveX() {
+    const r = this.isDown('KeyD') || this.isDown('ArrowRight') ? 1 : 0;
+    const l = this.isDown('KeyA') || this.isDown('ArrowLeft') ? 1 : 0;
+    return r - l;
+  }
+  moveY() {
+    const f = this.isDown('KeyW') || this.isDown('ArrowUp') ? 1 : 0;
+    const b = this.isDown('KeyS') || this.isDown('ArrowDown') ? 1 : 0;
+    return f - b;
+  }
+  get running() {
+    return this.isDown('ShiftLeft') || this.isDown('ShiftRight');
+  }
+  get handbrake() {
+    return this.isDown('Space');
   }
 }

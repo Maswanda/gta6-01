@@ -1,108 +1,130 @@
-// garage.js — Rico's Garage: buy, sell and select vehicles, plus the
-// safehouse rest logic (the garage module owns the player's property).
-// Owned cars and the selection persist through the save system.
-import { TUNE, dist2d } from './tuning.js';
+// garage.js — Solmar Bay: Rico's Garage and the safehouse.
+// The garage sells the four cars (a daily deal is 20% off), buys them
+// back at 60%, and lets the player pick which owned car is theirs.
+// The safehouse is a breather: rest heals, cools two wanted stars and
+// saves the game. Both open with a key when the player is close.
+import { TUNE } from './tuning.js';
 
-export class Garage {
+export class RicoGarage {
   constructor(world) {
     this.world = world;
-    this.owned = [...TUNE.garageStartOwned];
-    this.selected = this.owned[0] || null;
-    this._uiOpen = false;
+    const types = Object.keys(TUNE.cars);
+    world.garage = {
+      owned: ['sedan'],
+      selected: 'sedan',
+      deal: types[Math.floor(Math.random() * types.length)],
+    };
+    this.lastDay = 0;
+    this.spawned = {}; // type -> car entity on the forecourt
+    this.spawnOwned('sedan');
   }
-  state() {
-    return { owned: [...this.owned], selected: this.selected };
+  dealPrice(type) {
+    const spec = TUNE.cars[type];
+    if (this.world.garage.deal === type) return Math.floor(spec.price * (1 - TUNE.garage.dailyDealDiscount));
+    return spec.price;
   }
-  reset(world) {
-    // Wipe the in-memory garage so a load() from storage is the only
-    // source of truth afterwards (used by the save/load check).
-    this.owned = [];
-    this.selected = null;
+  spawnOwned(type) {
+    if (this.spawned[type]) return this.spawned[type];
+    const g = this.world.layout.places.garage;
+    const idx = Object.keys(this.spawned).length;
+    const car = this.world.drive.createCar(type, g.x - 10 + idx * 7, g.z + 12, Math.PI);
+    this.spawned[type] = car;
+    return car;
   }
-  canAfford(id) {
-    const spec = TUNE.vehicles[id];
-    return spec && this.world.player.cash >= spec.price;
-  }
-  buyVehicle(id) {
-    const spec = TUNE.vehicles[id];
-    if (!spec) return false;
-    if (this.owned.includes(id)) return false;
-    if (this.world.player.cash < spec.price) return false;
-    this.world.player.cash -= spec.price;
-    this.owned.push(id);
-    this.selected = id;
-    this.world.audio.cash();
-    this.world.hud.toast(spec.label + ' is yours — $' + spec.price.toLocaleString('en-US'));
-    return true;
-  }
-  sellVehicle(id) {
-    const spec = TUNE.vehicles[id];
-    if (!spec || !this.owned.includes(id)) return false;
-    if (this.owned.length <= 1) {
-      this.world.hud.toast('Keep at least one car in the garage.');
-      return false;
+  buy(type) {
+    const w = this.world;
+    const g = w.garage;
+    if (g.owned.includes(type)) {
+      this.select(type);
+      return;
     }
-    this.owned = this.owned.filter((v) => v !== id);
-    const refund = Math.floor(spec.price * 0.6);
-    this.world.player.cash += refund;
-    if (this.selected === id) this.selected = this.owned[0];
-    this.world.audio.cash();
-    this.world.hud.toast(spec.label + ' sold for $' + refund.toLocaleString('en-US'));
-    return true;
-  }
-  selectVehicle(id) {
-    if (!this.owned.includes(id)) return false;
-    this.selected = id;
-    this.world.hud.toast(TUNE.vehicles[id].label + ' selected');
-    return true;
-  }
-  // Open the garage UI when the player is at the garage and presses E.
-  // Not while the story wants a talk at the garage (Rico's ledger).
-  tryOpen() {
-    const p = this.world.player;
-    const g = TUNE.landmarks.garage;
-    if (dist2d(p.pos.x, p.pos.z, g.x, g.z) > 18) return false;
-    const step = this.world.missions.currentStep;
-    if (step && step.kind === 'talk' && step.at === 'garage') return false;
-    this.openUI();
-    return true;
-  }
-  openUI() {
-    const world = this.world;
-    const list = document.getElementById('garage-list');
-    if (!list) return;
-    let html = '';
-    for (const [id, spec] of Object.entries(TUNE.vehicles)) {
-      const has = this.owned.includes(id);
-      const sel = this.selected === id;
-      html += '<div class="garage-row">' +
-        '<span class="garage-name">' + spec.label + (sel ? ' ★' : '') + '</span>' +
-        '<span class="garage-price">' + (has ? 'OWNED' : '$' + spec.price.toLocaleString('en-US')) + '</span>' +
-        (has
-          ? '<button class="hud-btn-small" data-act="select" data-id="' + id + '">SELECT</button>' +
-            (this.owned.length > 1 ? '<button class="hud-btn-small" data-act="sell" data-id="' + id + '">SELL</button>' : '')
-          : '<button class="hud-btn-small" data-act="buy" data-id="' + id + '">BUY</button>') +
-        '</div>';
+    const price = this.dealPrice(type);
+    if (w.cash < price) {
+      w.sfx.denied();
+      w.hud.toast(`Need $${price.toLocaleString('en-US')} for the ${TUNE.cars[type].label}.`);
+      return;
     }
-    list.innerHTML = html;
-    list.querySelectorAll('button').forEach((b) => {
-      b.addEventListener('click', () => {
-        const act = b.dataset.act;
-        const id = b.dataset.id;
-        if (act === 'buy') this.buyVehicle(id);
-        if (act === 'sell') this.sellVehicle(id);
-        if (act === 'select') this.selectVehicle(id);
-        this.openUI();
-      });
-    });
-    world.hud.showGarage(true);
-    this._uiOpen = true;
+    w.cash -= price;
+    g.owned.push(type);
+    g.selected = type;
+    this.spawnOwned(type);
+    w.sfx.cash();
+    w.hud.toast(`Bought the ${TUNE.cars[type].label} — it is on the forecourt.`);
+    w.hud.showGarage(true, this.uiData());
   }
-  closeUI() {
-    this.world.hud.showGarage(false);
-    this._uiOpen = false;
+  sell(type) {
+    const w = this.world;
+    const g = w.garage;
+    if (!g.owned.includes(type)) return;
+    if (g.owned.length <= 1) {
+      w.sfx.denied();
+      w.hud.toast('Cannot sell your last ride.');
+      return;
+    }
+    const price = Math.floor(TUNE.cars[type].price * TUNE.garage.sellBack);
+    w.cash += price;
+    g.owned = g.owned.filter((t) => t !== type);
+    if (g.selected === type) g.selected = g.owned[0];
+    if (this.spawned[type]) {
+      w.drive.removeCar(this.spawned[type]);
+      delete this.spawned[type];
+    }
+    w.sfx.cash();
+    w.hud.toast(`Sold the ${TUNE.cars[type].label} for $${price.toLocaleString('en-US')}.`);
+    w.hud.showGarage(true, this.uiData());
   }
-  get uiOpen() {
-    return this._uiOpen;
+  select(type) {
+    const w = this.world;
+    if (!w.garage.owned.includes(type)) return;
+    w.garage.selected = type;
+    this.spawnOwned(type);
+    w.sfx.click();
+    w.hud.toast(`${TUNE.cars[type].label} selected — on the forecourt.`);
+    w.hud.showGarage(true, this.uiData());
+  }
+  uiData() {
+    const g = this.world.garage;
+    return {
+      cars: Object.entries(TUNE.cars).map(([type, spec]) => ({ type, label: spec.label, price: this.dealPrice(type) })),
+      owned: [...g.owned],
+      selected: g.selected,
+      deal: g.deal ? { type: g.deal, label: TUNE.cars[g.deal].label, price: TUNE.cars[g.deal].price } : null,
+    };
+  }
+  rest() {
+    const w = this.world;
+    w.walker.heal(100);
+    w.walker.addArmor(50);
+    w.wanted = Math.max(0, w.wanted - 2);
+    w.hour = (w.hour + 2) % 24;
+    w.persist.save();
+    w.sfx.pickup();
+    w.hud.toast('Rested at the safehouse — healed, cooled down, saved.');
+    w.hud.banner('SAFEHOUSE', 'Health restored. Heat cooled. Game saved.');
+  }
+  update(dt) {
+    const w = this.world;
+    // Rotate the daily deal when the day turns.
+    const day = Math.floor(w.elapsed / TUNE.day.dayLengthSec);
+    if (day !== this.lastDay) {
+      this.lastDay = day;
+      const types = Object.keys(TUNE.cars);
+      w.garage.deal = types[Math.floor(Math.random() * types.length)];
+    }
+    const p = w.player;
+    const g = w.layout.places.garage;
+    const s = w.layout.places.safehouse;
+    const dg = Math.hypot(p.x - g.x, p.z - g.z);
+    const ds = Math.hypot(p.x - s.x, p.z - s.z);
+    if (dg < 14 && w.input.wasPressed('KeyG')) {
+      w.hud.showGarage(true, this.uiData());
+      w.sfx.click();
+    }
+    if (ds < 10 && w.input.wasPressed('KeyH')) {
+      this.rest();
+    }
+    if (dg < 14) w.hint = 'Press G — Rico\'s Garage';
+    else if (ds < 10) w.hint = 'Press H — Safehouse: rest & cool down';
+    else if (!w.hintLocked) w.hint = '';
   }
 }

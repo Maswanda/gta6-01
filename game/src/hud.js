@@ -1,197 +1,240 @@
-// hud.js — The diegetic HUD: minimap, wanted stars, cash, health,
-// district name, radio station, objective, key hints, toasts and the
-// start / pause / busted / dead screens. All DOM, updated every frame.
-import { TUNE, districtAt } from './tuning.js';
-
-export class Hud {
-  constructor() {
-    this.root = document.getElementById('hud');
-    this._build();
+// hud.js — Solmar Bay: every pixel of interface, DOM over the canvas.
+// The minimap is a 2D canvas; the bars, stars, cash and objective are
+// plain DOM. Nothing here decides game logic — main.js hands it a
+// snapshot each frame and the panel shows it.
+export class HudPanel {
+  constructor(root, callbacks = {}) {
+    this.cb = callbacks;
+    this.root = root;
+    this.root.innerHTML = `
+      <div class="hud-tl">
+        <div id="hud-district">Marina</div>
+        <div id="hud-radio">SOLMAR 88.5</div>
+        <div id="hud-clock">17:30</div>
+      </div>
+      <div class="hud-tr">
+        <div id="hud-stars"></div>
+        <div id="hud-cash">$0</div>
+      </div>
+      <div id="hud-objective"></div>
+      <div class="hud-bl">
+        <canvas id="hud-minimap" width="190" height="190"></canvas>
+        <div id="hud-speed"></div>
+      </div>
+      <div class="hud-br">
+        <div class="hud-bar"><div id="hud-health"></div><span>HP</span></div>
+        <div class="hud-bar"><div id="hud-armor"></div><span>ARMOR</span></div>
+        <div id="hud-weapon"></div>
+      </div>
+      <div id="hud-hints"></div>
+      <div id="hud-toast"></div>
+      <div id="hud-banner"><div id="hud-banner-title"></div><div id="hud-banner-sub"></div></div>
+      <div id="hud-menu" class="hud-overlay">
+        <div class="hud-card">
+          <h1>SOLMAR BAY</h1>
+          <p class="hud-sub">Heatwave — an open-world crime story</p>
+          <p>Twelve missions. Four districts. One bay that never sleeps.</p>
+          <p class="hud-keys">WASD move &nbsp;·&nbsp; Shift run &nbsp;·&nbsp; E enter car &nbsp;·&nbsp; Mouse aim &nbsp;·&nbsp; Click / F shoot<br>
+          V radio &nbsp;·&nbsp; M mute &nbsp;·&nbsp; G garage &nbsp;·&nbsp; H safehouse &nbsp;·&nbsp; P pause &nbsp;·&nbsp; Space handbrake</p>
+          <button id="hud-start">START THE STORY</button>
+          <p class="hud-foot">100% self-contained — no network, no downloads.</p>
+        </div>
+      </div>
+      <div id="hud-pause" class="hud-overlay" hidden>
+        <div class="hud-card"><h1>PAUSED</h1><p>Press P to keep playing.</p></div>
+      </div>
+      <div id="hud-end" class="hud-overlay" hidden>
+        <div class="hud-card"><h1 id="hud-end-title">BUSTED</h1><p id="hud-end-text"></p><button id="hud-restart">BACK ON THE STREETS</button></div>
+      </div>
+      <div id="hud-garage" class="hud-overlay" hidden>
+        <div class="hud-card hud-garage-card">
+          <h1 id="hud-garage-title">RICO'S GARAGE</h1>
+          <p id="hud-garage-deal"></p>
+          <div id="hud-garage-list"></div>
+          <button id="hud-garage-close">CLOSE [G]</button>
+        </div>
+      </div>`;
+    this.el = {};
+    for (const id of ['district', 'radio', 'clock', 'stars', 'cash', 'objective', 'minimap', 'speed', 'health', 'armor', 'weapon', 'hints', 'toast', 'banner', 'banner-title', 'banner-sub', 'menu', 'pause', 'end', 'end-title', 'end-text', 'garage', 'garage-title', 'garage-deal', 'garage-list']) {
+      this.el[id] = this.root.querySelector(`#hud-${id}`);
+    }
+    this.mm = this.el.minimap.getContext('2d');
     this.toastTimer = null;
-    this.lastDistrict = '';
+    this.bannerTimer = null;
+    const startBtn = this.root.querySelector('#hud-start');
+    if (startBtn) startBtn.addEventListener('click', () => this.cb.onStart && this.cb.onStart());
+    const restartBtn = this.root.querySelector('#hud-restart');
+    if (restartBtn) restartBtn.addEventListener('click', () => this.cb.onRestart && this.cb.onRestart());
+    const closeBtn = this.root.querySelector('#hud-garage-close');
+    if (closeBtn) closeBtn.addEventListener('click', () => this.cb.onGarageClose && this.cb.onGarageClose());
   }
-  _el(tag, cls, parent, text = '') {
-    const e = document.createElement(tag);
-    if (cls) e.className = cls;
-    if (text) e.textContent = text;
-    parent.appendChild(e);
-    return e;
+  update(s) {
+    this.el.district.textContent = s.district || '';
+    this.el.radio.textContent = s.radio || '';
+    this.el.clock.textContent = s.clock || '';
+    this.el.cash.textContent = `$${Math.floor(s.cash || 0).toLocaleString('en-US')}`;
+    // Wanted stars.
+    let stars = '';
+    for (let i = 0; i < 5; i++) stars += i < (s.wanted || 0) ? '★' : '☆';
+    this.el.stars.textContent = stars;
+    this.el.stars.className = (s.wanted || 0) >= 4 ? 'hot' : '';
+    this.el.objective.textContent = s.objective || '';
+    this.el.health.style.width = `${Math.max(0, Math.min(100, s.health || 0))}%`;
+    this.el.armor.style.width = `${Math.max(0, Math.min(100, s.armor || 0))}%`;
+    this.el.weapon.textContent = s.weapon ? `${s.weapon}  ·  ${s.ammo ?? '∞'}` : '';
+    this.el.speed.textContent = s.inCar ? `${Math.round(s.speed || 0)} km/h` : '';
+    this.el.hints.textContent = s.hint || '';
   }
-  _build() {
-    // Top-left: minimap + district.
-    const tl = this._el('div', 'hud-tl', this.root);
-    this.map = this._el('canvas', 'hud-map', tl);
-    this.map.width = 190;
-    this.map.height = 190;
-    this.districtEl = this._el('div', 'hud-district', tl, 'Marina');
-    // Top-right: wanted stars + cash.
-    const tr = this._el('div', 'hud-tr', this.root);
-    this.starsEl = this._el('div', 'hud-stars', tr, '');
-    this.cashEl = this._el('div', 'hud-cash', tr, '$500');
-    this.radioEl = this._el('div', 'hud-radio', tr, 'SOLMAR 88.5');
-    // Bottom-left: health + armor + weapon.
-    const bl = this._el('div', 'hud-bl', this.root);
-    this.healthEl = this._el('div', 'hud-health', bl);
-    this.healthBar = this._el('div', 'hud-health-bar', this.healthEl);
-    this.armorEl = this._el('div', 'hud-armor', bl);
-    this.armorBar = this._el('div', 'hud-armor-bar', this.armorEl);
-    this.weaponEl = this._el('div', 'hud-weapon', bl, 'Pistol');
-    // Bottom-center: objective.
-    this.objectiveEl = this._el('div', 'hud-objective', this.root, '');
-    // Bottom-right: speed + hints.
-    const br = this._el('div', 'hud-br', this.root);
-    this.speedEl = this._el('div', 'hud-speed', br, '');
-    this.hintEl = this._el('div', 'hud-hint', br, '');
-    // Center: toast + wanted flash.
-    this.toastEl = this._el('div', 'hud-toast', this.root, '');
-    this.centerEl = this._el('div', 'hud-center', this.root, '');
-    // Overlays: menu / pause / busted / dead / garage.
-    this.menuEl = this._el('div', 'hud-overlay', this.root);
-    this.menuEl.id = 'menu';
-    this.menuEl.innerHTML = '<div class="hud-title">SOLMAR BAY</div><div class="hud-sub">HEATWAVE</div>' +
-      '<div class="hud-menu-text">Twelve jobs. One city. Don\'t get caught.</div>' +
-      '<button class="hud-btn" id="btn-start">START STORY</button>' +
-      '<div class="hud-controls">WASD move / drive &nbsp;·&nbsp; Shift sprint &nbsp;·&nbsp; C crouch<br>' +
-      'E talk &nbsp;·&nbsp; F enter car / punch &nbsp;·&nbsp; G shoot &nbsp;·&nbsp; R reload<br>' +
-      'T taxi &nbsp;·&nbsp; 1-3 weapons &nbsp;·&nbsp; Q radio &nbsp;·&nbsp; Esc pause</div>';
-    this.pauseEl = this._el('div', 'hud-overlay hud-hidden', this.root);
-    this.pauseEl.id = 'pause';
-    this.pauseEl.innerHTML = '<div class="hud-title">PAUSED</div><button class="hud-btn" id="btn-resume">RESUME</button>';
-    this.bustedEl = this._el('div', 'hud-overlay hud-hidden', this.root);
-    this.bustedEl.id = 'busted';
-    this.bustedEl.innerHTML = '<div class="hud-title hud-red">BUSTED</div><div class="hud-menu-text">The Solmar PD caught up with you.</div><button class="hud-btn" id="btn-busted">KEEP GOING</button>';
-    this.deadEl = this._el('div', 'hud-overlay hud-hidden', this.root);
-    this.deadEl.id = 'dead';
-    this.deadEl.innerHTML = '<div class="hud-title hud-red">WASTED</div><div class="hud-menu-text">Solmar Bay is unforgiving.</div><button class="hud-btn" id="btn-dead">TRY AGAIN</button>';
-    this.garageEl = this._el('div', 'hud-overlay hud-hidden', this.root);
-    this.garageEl.id = 'garage';
-    this.garageEl.innerHTML = '<div class="hud-title">RICO\u2019S GARAGE</div><div id="garage-list"></div><button class="hud-btn" id="btn-garage-close">CLOSE</button>';
-    this.mapCtx = this.map.getContext('2d');
-  }
-  showMenu(v) { this.menuEl.classList.toggle('hud-hidden', !v); }
-  showPause(v) { this.pauseEl.classList.toggle('hud-hidden', !v); }
-  showBusted(v) { this.bustedEl.classList.toggle('hud-hidden', !v); }
-  showDead(v) { this.deadEl.classList.toggle('hud-hidden', !v); }
-  showGarage(v) { this.garageEl.classList.toggle('hud-hidden', !v); }
-  toast(text, ms = 2600) {
-    this.toastEl.textContent = text;
-    this.toastEl.classList.add('hud-toast-show');
-    clearTimeout(this.toastTimer);
-    this.toastTimer = setTimeout(() => this.toastEl.classList.remove('hud-toast-show'), ms);
-  }
-  flash(text, ms = 1600) {
-    this.centerEl.textContent = text;
-    this.centerEl.classList.add('hud-center-show');
-    setTimeout(() => this.centerEl.classList.remove('hud-center-show'), ms);
-  }
-  update(world) {
-    const p = world.player;
-    const w = world.police.wanted;
-    this.starsEl.textContent = w > 0 ? '\u2605'.repeat(w) + '\u2606'.repeat(5 - w) : '';
-    this.starsEl.classList.toggle('hud-stars-on', w > 0);
-    this.cashEl.textContent = '$' + Math.floor(p.cash).toLocaleString('en-US');
-    this.radioEl.textContent = (world.radio.on ? '\u266B ' : '\u266B muted · ') + world.radio.name;
-    this.healthBar.style.width = Math.max(0, p.health) + '%';
-    this.armorBar.style.width = Math.max(0, p.armor) + '%';
-    this.healthEl.title = 'Health ' + Math.round(p.health);
-    this.armorEl.title = 'Armor ' + Math.round(p.armor);
-    const wp = TUNE.weapons[p.weapon];
-    const ammo = world.combat.ammo[p.weapon];
-    this.weaponEl.textContent = wp.label + '  ' + ammo + ' / ' + wp.mag + (p.weapon === 'pistol' ? ' ∞' : '');
-    const d = districtAt(p.pos.x, p.pos.z);
-    if (d.name !== this.lastDistrict) {
-      this.lastDistrict = d.name;
-      this.districtEl.textContent = d.name;
+  drawMinimap(m) {
+    const ctx = this.mm;
+    const W = 190;
+    const H = 190;
+    const half = m.layout.half;
+    const toX = (x) => ((x + half) / (half * 2)) * W;
+    const toY = (z) => ((z + half) / (half * 2)) * H;
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = 'rgba(8, 18, 26, 0.85)';
+    ctx.fillRect(0, 0, W, H);
+    // District tint.
+    for (const d of m.layout.districts) {
+      ctx.fillStyle = `rgba(${(d.color >> 16) & 255},${(d.color >> 8) & 255},${d.color & 255},0.18)`;
+      ctx.beginPath();
+      ctx.arc(toX(d.cx), toY(d.cz), 34, 0, Math.PI * 2);
+      ctx.fill();
     }
-    const obj = world.missions.currentObjective();
-    this.objectiveEl.textContent = obj ? obj : '';
-    const speedKmh = p.inCar ? Math.round(Math.abs(p.inCar.speed) * 3.6) : 0;
-    this.speedEl.textContent = p.inCar ? speedKmh + ' km/h' + (world.drifting ? '  ·  DRIFT!' : '') : '';
-    this.hintEl.textContent = world.hint || '';
-    this._drawMap(world);
-  }
-  _drawMap(world) {
-    const g = this.mapCtx;
-    const S = 190;
-    const scale = S / (TUNE.cityHalf * 2 + 20);
-    const X = (x) => (x + TUNE.cityHalf + 10) * scale;
-    const Z = (z) => (z + TUNE.cityHalf + 10) * scale;
-    g.clearRect(0, 0, S, S);
-    g.fillStyle = 'rgba(10, 16, 24, 0.82)';
-    g.fillRect(0, 0, S, S);
-    // District tints.
-    for (const d of TUNE.districts) {
-      g.fillStyle = '#' + d.tint.toString(16).padStart(6, '0');
-      g.globalAlpha = 0.35;
-      g.fillRect(X(d.x0), Z(d.z0), (d.x1 - d.x0) * scale, (d.z1 - d.z0) * scale);
-    }
-    g.globalAlpha = 1;
-    // Water.
-    g.fillStyle = '#1f6f8b';
-    g.fillRect(0, Z(296), S, S - Z(296));
     // Roads.
-    g.strokeStyle = 'rgba(220,220,210,0.5)';
-    g.lineWidth = 1.2;
-    for (const r of world.city.roads) {
-      g.beginPath();
-      if (r.axis === 'x') { g.moveTo(0, Z(r.at)); g.lineTo(S, Z(r.at)); }
-      else { g.moveTo(X(r.at), 0); g.lineTo(X(r.at), S); }
-      g.stroke();
+    ctx.strokeStyle = 'rgba(220, 220, 200, 0.55)';
+    ctx.lineWidth = 1.4;
+    for (const c of m.layout.roadAt) {
+      ctx.beginPath();
+      ctx.moveTo(toX(c), 0);
+      ctx.lineTo(toX(c), H);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(0, toY(c));
+      ctx.lineTo(W, toY(c));
+      ctx.stroke();
     }
     // Landmarks.
-    for (const lm of Object.values(TUNE.landmarks)) {
-      g.fillStyle = '#ffd34d';
-      g.beginPath();
-      g.arc(X(lm.x), Z(lm.z), 2.5, 0, Math.PI * 2);
-      g.fill();
+    ctx.fillStyle = '#ffd76a';
+    for (const l of m.layout.landmarks) {
+      ctx.fillRect(toX(l.x) - 2, toY(l.z) - 2, 4, 4);
     }
-    // Objective marker (pulsing yellow diamond).
-    const obj = world.missions.currentTarget();
-    if (obj) {
-      const t = performance.now() / 300;
-      const r = 5 + Math.sin(t) * 2;
-      g.fillStyle = '#ffe14d';
-      g.save();
-      g.translate(X(obj.x), Z(obj.z));
-      g.rotate(Math.PI / 4);
-      g.fillRect(-r / 2, -r / 2, r, r);
-      g.restore();
+    // Garage + safehouse.
+    ctx.fillStyle = '#39d0c0';
+    ctx.fillRect(toX(m.layout.places.garage.x) - 3, toY(m.layout.places.garage.z) - 3, 6, 6);
+    ctx.fillStyle = '#7ad03a';
+    ctx.fillRect(toX(m.layout.places.safehouse.x) - 3, toY(m.layout.places.safehouse.z) - 3, 6, 6);
+    // Objective.
+    if (m.objective) {
+      const ox = toX(m.objective.x);
+      const oy = toY(m.objective.z);
+      ctx.fillStyle = '#ff5a3a';
+      ctx.beginPath();
+      ctx.arc(ox, oy, 6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(ox, oy, 9, 0, Math.PI * 2);
+      ctx.stroke();
     }
-    // Crime event.
-    if (world.crime.event) {
-      const pos = world.crime.eventPos();
-      if (pos) {
-        g.fillStyle = '#ff4d4d';
-        g.beginPath();
-        g.arc(X(pos.x), Z(pos.z), 4, 0, Math.PI * 2);
-        g.fill();
-      }
+    // Cops.
+    ctx.fillStyle = '#2a5aff';
+    for (const c of m.cops || []) {
+      ctx.beginPath();
+      ctx.arc(toX(c.x), toY(c.z), 3, 0, Math.PI * 2);
+      ctx.fill();
     }
-    // Police cars.
-    for (const car of world.allCars) {
-      if (!car.isPolice) continue;
-      g.fillStyle = '#4d9fff';
-      g.fillRect(X(car.pos.x) - 2, Z(car.pos.z) - 2, 4, 4);
-    }
-    // Heli.
-    if (world.heli.active) {
-      g.fillStyle = '#ffffff';
-      g.beginPath();
-      g.arc(X(world.heli.pos.x), Z(world.heli.pos.z), 3.5, 0, Math.PI * 2);
-      g.fill();
+    // Helicopter.
+    if (m.heli) {
+      ctx.fillStyle = '#ff2a2a';
+      ctx.beginPath();
+      ctx.arc(toX(m.heli.x), toY(m.heli.z), 4, 0, Math.PI * 2);
+      ctx.fill();
     }
     // Player arrow.
-    const p = world.player;
-    g.save();
-    g.translate(X(p.pos.x), Z(p.pos.z));
-    g.rotate(Math.atan2(Math.sin(p.heading), Math.cos(p.heading)));
-    g.fillStyle = '#ffffff';
-    g.beginPath();
-    g.moveTo(0, -6);
-    g.lineTo(4.5, 5);
-    g.lineTo(-4.5, 5);
-    g.closePath();
-    g.fill();
-    g.restore();
+    const px = toX(m.player.x);
+    const py = toY(m.player.z);
+    ctx.save();
+    ctx.translate(px, py);
+    ctx.rotate(-m.player.heading + Math.PI);
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.moveTo(0, -7);
+    ctx.lineTo(5, 6);
+    ctx.lineTo(-5, 6);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+    // North tick.
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 11px sans-serif';
+    ctx.fillText('N', 4, 12);
+  }
+  toast(msg) {
+    this.el.toast.textContent = msg;
+    this.el.toast.classList.add('show');
+    if (this.toastTimer) clearTimeout(this.toastTimer);
+    this.toastTimer = setTimeout(() => this.el.toast.classList.remove('show'), 2600);
+  }
+  banner(title, sub = '') {
+    this.el['banner-title'].textContent = title;
+    this.el['banner-sub'].textContent = sub;
+    this.el.banner.classList.add('show');
+    if (this.bannerTimer) clearTimeout(this.bannerTimer);
+    this.bannerTimer = setTimeout(() => this.el.banner.classList.remove('show'), 3400);
+  }
+  setObjective(text) {
+    this.el.objective.textContent = text;
+  }
+  showMenu(show) {
+    this.el.menu.hidden = !show;
+  }
+  showPause(show) {
+    this.el.pause.hidden = !show;
+  }
+  showEnd(kind, text) {
+    this.el['end-title'].textContent = kind === 'busted' ? 'BUSTED' : 'WASTED';
+    this.el['end-text'].textContent = text;
+    this.el.end.hidden = false;
+  }
+  hideEnd() {
+    this.el.end.hidden = true;
+  }
+  showGarage(show, data) {
+    this.el.garage.hidden = !show;
+    if (!show || !data) return;
+    this.el['garage-deal'].textContent = data.deal
+      ? `TODAY'S DEAL: ${data.deal.label} −20% — $${Math.floor(data.deal.price * 0.8).toLocaleString('en-US')}`
+      : '';
+    const list = this.el['garage-list'];
+    list.innerHTML = '';
+    for (const car of data.cars) {
+      const row = document.createElement('div');
+      row.className = 'hud-garage-row';
+      const owned = data.owned.includes(car.type);
+      const selected = data.selected === car.type;
+      row.innerHTML = `<span>${car.label} — $${car.price.toLocaleString('en-US')}${owned ? ' · OWNED' : ''}${selected ? ' · SELECTED' : ''}</span>`;
+      const btn = document.createElement('button');
+      if (selected) {
+        btn.textContent = 'SELECTED';
+        btn.disabled = true;
+      } else if (owned) {
+        btn.textContent = 'SELECT';
+        btn.addEventListener('click', () => this.cb.onGarageSelect && this.cb.onGarageSelect(car.type));
+      } else {
+        btn.textContent = 'BUY';
+        btn.addEventListener('click', () => this.cb.onGarageBuy && this.cb.onGarageBuy(car.type));
+      }
+      row.appendChild(btn);
+      if (owned && !selected) {
+        const sell = document.createElement('button');
+        sell.textContent = 'SELL';
+        sell.addEventListener('click', () => this.cb.onGarageSell && this.cb.onGarageSell(car.type));
+        row.appendChild(sell);
+      }
+      list.appendChild(row);
+    }
   }
 }

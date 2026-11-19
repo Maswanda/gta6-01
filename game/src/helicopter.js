@@ -1,169 +1,114 @@
-// helicopter.js — The Solmar PD air unit.
-// Lifts off at four stars, circles the player's last known position,
-// and sweeps a searchlight across the ground. While the spotlight
-// is on the player the heat will not cool — hiding is impossible
-// until the chopper is shot down or the player breaks line of sight.
-import * as THREE from 'three';
-import { TUNE, clamp, dist2d } from './tuning.js';
+// helicopter.js — Solmar Bay: the PD air unit.
+// Spawns at four wanted stars, climbs to cruise height and shadows the
+// player. Its spotlight pins the player: while lit, the wanted level
+// cannot decay (hiding does not work under the beam). The player can
+// shoot it down — 100 damage makes it pull off and retreat. It will
+// not come back until its cooldown clears.
+import { TUNE } from './tuning.js';
 
-export class Helicopter {
+export class AirUnit {
   constructor(world) {
     this.world = world;
-    this.active = false;
-    this.lit = false;
-    this.hp = 100;
-    this.retreatTimer = 0;
-    this.pos = new THREE.Vector3(0, 26, 0);
-    this.lastKnown = new THREE.Vector3(0, 0, 0);
-    this._wanted = false;
-    this.group = new THREE.Group();
-    // Nose along local +z so rotation.y = atan2(dx, dz) points the
-    // chopper along its direction of travel.
-    const body = new THREE.Mesh(
-      new THREE.BoxGeometry(2.2, 1.6, 4.4),
-      new THREE.MeshLambertMaterial({ color: 0x7a9aba }),
-    );
-    body.position.y = 0;
-    this.group.add(body);
-    // Red beacon on top, blinking, so the chopper reads at night.
-    this.beacon = new THREE.Mesh(
-      new THREE.SphereGeometry(0.45, 8, 6),
-      new THREE.MeshBasicMaterial({ color: 0xff2222 }),
-    );
-    this.beacon.position.set(0, 1.1, -1.2);
-    this.group.add(this.beacon);
-    const tail = new THREE.Mesh(
-      new THREE.BoxGeometry(0.5, 0.5, 3.4),
-      new THREE.MeshLambertMaterial({ color: 0x7a9aba }),
-    );
-    tail.position.set(0, 0.3, -3.6);
-    this.group.add(tail);
-    const rotor = new THREE.Mesh(
-      new THREE.BoxGeometry(9, 0.08, 0.5),
-      new THREE.MeshLambertMaterial({ color: 0x111111 }),
-    );
-    rotor.position.y = 1.1;
-    this.group.add(rotor);
-    this.rotor = rotor;
-    const skid = new THREE.Mesh(
-      new THREE.BoxGeometry(1.6, 0.12, 3.4),
-      new THREE.MeshLambertMaterial({ color: 0x111111 }),
-    );
-    skid.position.y = -1;
-    this.group.add(skid);
-    // Searchlight: a real spotlight + a visible cone.
-    this.spot = new THREE.SpotLight(0xfff2b0, 0, 90, 0.32, 0.5, 1.2);
-    this.spot.position.set(0, -0.5, 0);
-    this.group.add(this.spot);
-    this.spot.target.position.set(0, -30, 0);
-    this.group.add(this.spot.target);
-    const coneGeo = new THREE.ConeGeometry(9, 26, 16, 1, true);
-    this.cone = new THREE.Mesh(
-      coneGeo,
-      new THREE.MeshBasicMaterial({ color: 0xfff2b0, transparent: true, opacity: 0.0, side: THREE.DoubleSide, depthWrite: false }),
-    );
-    this.cone.rotation.x = Math.PI;
-    this.cone.position.y = -13.5;
-    this.group.add(this.cone);
-    this.group.visible = false;
-    world.scene.dynamic.add(this.group);
+    world.helicopter = this;
+    this.cooldown = 0;
   }
-  request() {
-    if (this.active || this.retreatTimer > 0) return;
-    this._wanted = true;
+  get heli() {
+    return this.world.heli;
   }
-  // Launch immediately, already overhead — used by the ?shot= staging
-  // so the chopper is in frame on the first rendered frame.
-  forceLaunch() {
-    const world = this.world;
-    const p = world.player;
-    this.retreatTimer = 0;
-    this._wanted = false;
-    this.active = true;
-    this.hp = 100;
-    this.pos.set(p.pos.x + 18, 26, p.pos.z + 18);
-    this.lastKnown.set(p.pos.x, 0, p.pos.z);
-    this.group.visible = true;
+  spawn() {
+    const w = this.world;
+    const p = w.player;
+    const mesh = w.stage.makeHeli();
+    const heli = {
+      x: p.x - 40, y: TUNE.helicopter.cruiseHeight, z: p.z - 40,
+      heading: 0, damage: 0, mesh, gone: false, retreating: false,
+    };
+    mesh.position.set(heli.x, heli.y, heli.z);
+    w.heli = heli;
+    w.hud.toast('PD AIR UNIT overhead — the spotlight is on you!');
+    w.sfx.setSiren(true);
+    return heli;
   }
-  _launch() {
-    const world = this.world;
-    const p = world.player;
-    this.active = true;
-    this.hp = 100;
-    this._wanted = false;
-    // Lift off close overhead so the spotlight is on the player
-    // within a frame or two of the launch.
-    this.pos.set(p.pos.x + 25, 26, p.pos.z + 25);
-    this.lastKnown.set(p.pos.x, 0, p.pos.z);
-    this.group.visible = true;
-    world.hud.toast('PD air unit overhead — break line of sight!');
-    world.audio.blip(440, 0.3, 'sawtooth', 0.12, 880);
-  }
-  damage(n, world) {
-    if (!this.active) return;
-    this.hp -= n;
-    world.effects.smoke(this.pos);
-    if (this.hp <= 0) {
-      this.active = false;
-      this.lit = false;
-      this.retreatTimer = TUNE.heliRetreatSec;
-      this.group.visible = false;
-      this.spot.intensity = 0;
-      this.cone.material.opacity = 0;
-      world.effects.explosion(this.pos);
-      world.hud.toast('Air unit down! The sky is clear — for now.');
-      world.audio.noise(0.5, 0.4, 700);
+  damage(amount) {
+    const heli = this.world.heli;
+    if (!heli || heli.gone) return false;
+    heli.damage += amount;
+    this.world.fx.burst(heli.x, heli.y, heli.z, 0xffd76a, 8, 8, 0.5, 4);
+    if (heli.damage >= TUNE.helicopter.retreatDamage) {
+      this.world.stats.heliDowns = (this.world.stats.heliDowns || 0) + 1;
+      this.retreat(heli, 'You drove the air unit off — the beam is gone.');
+      return true;
     }
+    return false;
+  }
+  retreat(heli, msg) {
+    heli.gone = true;
+    heli.retreating = true;
+    const ud = heli.mesh.userData;
+    if (ud.spot) ud.spot.intensity = 0;
+    if (ud.cone) ud.cone.visible = false;
+    this.world.heliLit = false;
+    if (msg) this.world.hud.toast(msg);
+    this.world.sfx.noise(0.4, 0.3, 700);
   }
   update(dt) {
-    const world = this.world;
-    if (this.retreatTimer > 0) this.retreatTimer -= dt;
-    if (this._wanted && world.police.wanted >= TUNE.heliWanted) {
-      this._launch();
+    const w = this.world;
+    this.cooldown = Math.max(0, this.cooldown - dt);
+    const stars = w.police ? w.police.stars() : 0;
+    let heli = w.heli;
+    // Spawn when the heat hits four stars.
+    if (!heli && stars >= TUNE.helicopter.spawnAtStars && this.cooldown <= 0 && !w.ended) {
+      heli = this.spawn();
     }
-    if (!this.active) {
-      this.lit = false;
+    if (!heli) {
+      w.heliLit = false;
       return;
     }
-    if (world.police.wanted < TUNE.heliWanted) {
-      // Heat dropped: the chopper peels away.
-      this.active = false;
-      this.lit = false;
-      this.group.visible = false;
-      this.spot.intensity = 0;
-      this.cone.material.opacity = 0;
+    const p = w.player;
+    if (heli.retreating) {
+      // Climb and fly away, then despawn.
+      heli.y += 26 * dt;
+      heli.x += (heli.x - p.x) * 0.4 * dt;
+      heli.z += (heli.z - p.z) * 0.4 * dt;
+      heli.mesh.position.set(heli.x, heli.y, heli.z);
+      heli.mesh.userData.rotor.rotation.y += dt * 34;
+      const d = Math.hypot(heli.x - p.x, heli.z - p.z);
+      if (heli.y > 150 || d > 260) {
+        w.stage.scene.remove(heli.mesh);
+        w.heli = null;
+        this.cooldown = 20;
+      }
       return;
     }
-    const p = world.player;
-    // Track the player's last known position; drift toward it.
-    this.lastKnown.x += (p.pos.x - this.lastKnown.x) * Math.min(1, dt * 0.4);
-    this.lastKnown.z += (p.pos.z - this.lastKnown.z) * Math.min(1, dt * 0.4);
-    const dx = this.lastKnown.x - this.pos.x;
-    const dz = this.lastKnown.z - this.pos.z;
+    // The heat fell: the air unit leaves on its own.
+    if (stars < TUNE.helicopter.spawnAtStars) {
+      this.retreat(heli, 'The air unit pulled off — the heat is down.');
+      return;
+    }
+    // Follow the player, holding cruise height.
+    const dx = p.x - heli.x;
+    const dz = p.z - heli.z;
     const d = Math.hypot(dx, dz);
-    const speed = 26;
-    if (d > 4) {
-      this.pos.x += (dx / d) * speed * dt;
-      this.pos.z += (dz / d) * speed * dt;
+    const sp = TUNE.helicopter.followSpeed;
+    if (d > 2) {
+      heli.x += (dx / d) * sp * dt;
+      heli.z += (dz / d) * sp * dt;
     }
-    // Hover height with a gentle bob.
-    this.pos.y = 26 + Math.sin(world.time.now * 1.4) * 1.2;
-    this.group.position.copy(this.pos);
-    this.group.rotation.y = Math.atan2(dx, dz);
-    this.rotor.rotation.y += dt * 22;
-    this.beacon.visible = Math.floor(world.time.now * 2.5) % 2 === 0;
-    // Spotlight: on when the player is under the cone and it is dark
-    // enough for the beam to matter — and always on at four stars
-    // once the chopper is overhead (within 45m).
-    const overhead = dist2d(this.pos.x, this.pos.z, p.pos.x, p.pos.z) < 45;
-    const night = world.city.nightness();
-    this.lit = overhead;
-    this.spot.intensity = overhead ? (night > 0.4 ? 2.6 : 1.4) : 0;
-    this.cone.material.opacity = overhead ? (night > 0.4 ? 0.16 : 0.07) : 0;
-    // The beam follows the player when lit (the spotlight target
-    // tracks them; the visible cone hangs straight down).
-    if (overhead) {
-      this.spot.target.position.set(p.pos.x - this.pos.x, -26, p.pos.z - this.pos.z);
+    heli.heading = Math.atan2(dx, dz);
+    heli.mesh.position.set(heli.x, heli.y, heli.z);
+    heli.mesh.rotation.y = heli.heading;
+    heli.mesh.userData.rotor.rotation.y += dt * 30;
+    // Spotlight on the player: the beam pins them and freezes wanted decay.
+    const ud = heli.mesh.userData;
+    ud.spotTarget.position.set(p.x, 0, p.z);
+    ud.spot.intensity = 7;
+    ud.cone.visible = true;
+    // Aim the cone at the player (the cone hangs below the heli).
+    ud.cone.lookAt(p.x - heli.x, -heli.y, p.z - heli.z);
+    const lit = d < TUNE.helicopter.spotlightRange + 40;
+    w.heliLit = lit;
+    if (heli.damage > 60 && Math.random() < dt * 2) {
+      w.fx.smoke(heli.x, heli.y - 1, heli.z);
     }
   }
 }

@@ -1,199 +1,156 @@
-// police.js — The Solmar PD: wanted stars, patrol cars that chase,
-// roadblocks at four stars and up, heat decay (faster when the
-// player hides), and the bust rule — a cop on your shoulder for a
-// few seconds ends the run.
-import * as THREE from 'three';
-import { TUNE, clamp, dist2d } from './tuning.js';
-import { Car } from './drive.js';
+// police.js — Solmar Bay: the wanted level and the law's answer.
+// Wanted is a float; stars are its ceiling. Cops spawn by the star count,
+// chase the player, and — when the player is on foot and an officer
+// reaches them — hold them for arrestHoldSeconds before the bust lands.
+// That hold time is read from TUNE by name (the bust fix: the value
+// exists, it is used, and the timer resets the moment the player breaks away).
+import { TUNE } from './tuning.js';
+import { randomRoadPoint } from './city.js';
 
-export class Police {
+export class LawForce {
   constructor(world) {
     this.world = world;
-    this.wanted = 0;
-    this.decayTimer = 0;
-    this.units = [];
-    this.roadblocks = [];
-    this.bustTimer = 0;
-    this._spawnTimer = 0;
+    this.cops = [];
+    world.cops = this.cops;
+    this.roadblock = [];
+    this.arrestTimer = 0;
+    this.copShootTimer = 0;
   }
-  setWanted(n) {
-    const world = this.world;
-    const old = this.wanted;
-    this.wanted = clamp(Math.round(n), 0, 5);
-    this.decayTimer = 0;
-    if (this.wanted >= 4 && old < 4) {
-      world.heli.request();
-    }
-    if (this.wanted === 0) {
-      this._clearUnits();
-    } else {
-      // Pursuit units deploy immediately, at the player's position
-      // when the heat rises — so a player who then teleports away
-      // leaves the units behind (the hidden-decay test relies on it).
-      const want = Math.min(this.wanted + 1, 6);
-      while (this.units.length < want) this._spawnUnit();
-    }
-    if (this.wanted >= 4) this._deployRoadblocks();
-    else this._clearRoadblocks();
+  stars() {
+    const w = this.world.wanted;
+    if (w < 0.5) return 0;
+    return Math.min(5, Math.ceil(w - 0.01));
   }
   addWanted(n) {
-    this.setWanted(this.wanted + n);
+    this.world.wanted = Math.min(5, Math.max(0, this.world.wanted + n));
   }
-  _clearUnits() {
-    for (const u of this.units) {
-      if (u.mesh && u.mesh.parent) u.mesh.parent.remove(u.mesh);
-      const i = this.world.allCars.indexOf(u);
-      if (i >= 0) this.world.allCars.splice(i, 1);
-    }
-    this.units = [];
+  spawnCop(x, z) {
+    const heading = Math.atan2(this.world.player.x - x, this.world.player.z - z);
+    const car = this.world.drive.createCar('sedan', x, z, heading, { cop: true });
+    car.health = TUNE.police.copHealth;
+    car.shootTimer = 1 + Math.random();
+    this.cops.push(car);
+    return car;
   }
-  _deployRoadblocks() {
-    this._clearRoadblocks();
-    const world = this.world;
-    const p = world.player;
-    // Two roadblocks on the avenues ahead of the player.
-    for (let i = 0; i < 2; i++) {
-      const a = world.rng.range(0, Math.PI * 2);
-      const bx = p.pos.x + Math.sin(a) * 40;
-      const bz = p.pos.z + Math.cos(a) * 40;
-      const block = [];
-      for (let j = -1; j <= 1; j++) {
-        const car = new Car(world, 'sedan', bx + j * 4, bz, a + Math.PI / 2, 0xeeeeee, true);
-        car.speed = 0;
-        block.push(car);
-        world.allCars.push(car);
-        this.units.push(car);
-      }
-      this.roadblocks.push({ cars: block, x: bx, z: bz });
-    }
+  removeCop(car) {
+    const i = this.cops.indexOf(car);
+    if (i >= 0) this.cops.splice(i, 1);
+    this.world.drive.removeCar(car);
   }
-  _clearRoadblocks() {
-    for (const rb of this.roadblocks) {
-      for (const car of rb.cars) {
-        if (car.mesh && car.mesh.parent) car.mesh.parent.remove(car.mesh);
-        const i = this.world.allCars.indexOf(car);
-        if (i >= 0) this.world.allCars.splice(i, 1);
-        const j = this.units.indexOf(car);
-        if (j >= 0) this.units.splice(j, 1);
-      }
-    }
-    this.roadblocks = [];
-  }
-  _spawnUnit() {
-    const world = this.world;
-    const p = world.player;
-    const a = world.rng.range(0, Math.PI * 2);
-    const d = 60 + world.rng.range(0, 40);
-    const car = new Car(world, 'sedan', p.pos.x + Math.sin(a) * d, p.pos.z + Math.cos(a) * d, a, 0xeeeeee, true);
-    car.spec = { ...TUNE.vehicles.sedan, topSpeed: 40, accel: 22 };
-    car.speed = 10;
-    world.allCars.push(car);
-    this.units.push(car);
-  }
-  _nearestUnitDist() {
-    const p = this.world.player;
-    let best = Infinity;
-    for (const u of this.units) {
-      if (!u.alive) continue;
-      best = Math.min(best, dist2d(p.pos.x, p.pos.z, u.pos.x, u.pos.z));
-    }
-    return best;
+  clearAll() {
+    for (const c of [...this.cops]) this.removeCop(c);
+    for (const c of [...this.roadblock]) this.world.drive.removeCar(c);
+    this.roadblock = [];
+    this.arrestTimer = 0;
   }
   update(dt) {
-    const world = this.world;
-    const p = world.player;
-    // Spawn pursuit units up to the wanted level.
-    if (this.wanted > 0) {
-      this._spawnTimer -= dt;
-      const want = Math.min(this.wanted + 1, 6);
-      if (this.units.length < want && this._spawnTimer <= 0) {
-        this._spawnTimer = 3;
-        this._spawnUnit();
-      }
+    const w = this.world;
+    const stars = this.stars();
+    // --- wanted decay: the helicopter's spotlight freezes it. ---
+    if (!w.heliLit) {
+      const hidden = this.cops.every((c) => Math.hypot(c.x - w.player.x, c.z - w.player.z) > 45);
+      const rate = TUNE.police.decayPerSec + (hidden ? TUNE.police.decayHiddenBonus : 0);
+      w.wanted = Math.max(0, w.wanted - rate * dt);
     }
-    // Chase AI: intercept the player, ram on contact. On foot the
-    // units circle at a distance (they surround, not pile in); in a
-    // car they ram. A unit only busts the player when it is slow and
-    // right on top of them — a cop who has genuinely caught up.
-    for (const u of this.units) {
-      if (!u.alive) continue;
-      const d = dist2d(u.pos.x, u.pos.z, p.pos.x, p.pos.z);
-      const ang = Math.atan2(p.pos.x - u.pos.x, p.pos.z - u.pos.z);
-      let diff = ang - u.heading;
-      while (diff > Math.PI) diff -= Math.PI * 2;
-      while (diff < -Math.PI) diff += Math.PI * 2;
-      // Steering sign: turning right (steer +1) decreases heading,
-      // so steer toward the target with the opposite sign of diff.
-      let steer = -clamp(diff * 1.4, -1, 1);
-      let target = d > 12 ? 34 : 26;
-      if (!p.inCar && d < 10) {
-        // Orbit the player at ~8m instead of ramming through them.
-        const orbitAng = ang + Math.PI / 2;
-        const tx = p.pos.x + Math.sin(orbitAng) * 8;
-        const tz = p.pos.z + Math.cos(orbitAng) * 8;
-        const oAng = Math.atan2(tx - u.pos.x, tz - u.pos.z);
-        let oDiff = oAng - u.heading;
-        while (oDiff > Math.PI) oDiff -= Math.PI * 2;
-        while (oDiff < -Math.PI) oDiff += Math.PI * 2;
-        steer = -clamp(oDiff * 1.4, -1, 1);
-        target = 12;
-      }
-      u.cruise(target, steer, dt);
-      // Ram: bump the player's car, or clip the player on foot.
-      if (d < 3.4) {
-        if (p.inCar) {
-          u.bump(p.inCar);
-          world.audio.blip(120, 0.1, 'square', 0.15, 60);
-        } else if (d < 2.2) {
-          world.damagePlayer(8 * dt, u.pos);
-        }
-      }
+    w.sfx.setSiren(stars >= 1);
+    // --- keep the cop count matched to the stars. ---
+    const want = TUNE.police.maxCars[stars] || 0;
+    while (this.cops.length < want) {
+      const p = randomRoadPoint(w.layout, w.dice);
+      const ang = Math.random() * Math.PI * 2;
+      const dist = 70 + Math.random() * 40;
+      const x = w.player.x + Math.cos(ang) * dist;
+      const z = w.player.z + Math.sin(ang) * dist;
+      const c = w.layout.half - 10;
+      this.spawnCop(Math.max(-c, Math.min(c, x)), Math.max(-c, Math.min(c, z)));
     }
-    // Bust: a slow unit right on top of an on-foot player for the
-    // full hold time. Fast drive-bys never count.
-    if (this.wanted > 0 && p.health > 0 && !p.inCar) {
-      let slowNear = null;
-      for (const u of this.units) {
-        if (!u.alive) continue;
-        if (dist2d(p.pos.x, p.pos.z, u.pos.x, u.pos.z) < 3.2 && Math.abs(u.speed) < 4) {
-          slowNear = u;
-          break;
+    while (this.cops.length > want) {
+      // Drop the farthest cop first.
+      let far = this.cops[0];
+      let farD = -1;
+      for (const c of this.cops) {
+        const d = Math.hypot(c.x - w.player.x, c.z - w.player.z);
+        if (d > farD) {
+          farD = d;
+          far = c;
         }
       }
-      if (slowNear) {
-        this.bustTimer += dt;
-        if (this.bustTimer >= TUNE.bustHoldSec) {
-          this.bustTimer = 0;
-          world.busted();
-        }
+      this.removeCop(far);
+    }
+    // --- roadblocks at four stars and up. ---
+    if (stars >= TUNE.police.roadblockAtStars && this.roadblock.length === 0) {
+      const p = w.player;
+      const fx = Math.sin(p.heading);
+      const fz = Math.cos(p.heading);
+      for (const side of [-6, 0, 6]) {
+        const bx = p.x + fx * 34 - fz * side;
+        const bz = p.z + fz * 34 + fx * side;
+        const car = w.drive.createCar('sedan', bx, bz, p.heading + Math.PI / 2, { cop: true });
+        car.health = TUNE.police.copHealth;
+        this.roadblock.push(car);
+      }
+      w.hud.toast('ROADBLOCK AHEAD — the PD sealed the street!');
+    } else if (stars < TUNE.police.roadblockAtStars && this.roadblock.length > 0) {
+      for (const c of [...this.roadblock]) w.drive.removeCar(c);
+      this.roadblock = [];
+    }
+    // --- cops chase, shoot, and (on foot) arrest. ---
+    let arresting = false;
+    for (const cop of [...this.cops]) {
+      if (cop.health <= 0) {
+        w.fx.explosion(cop.x, 1, cop.z);
+        w.sfx.explosion();
+        this.removeCop(cop);
+        this.addWanted(1);
+        w.hud.toast('You took out a patrol car — heat rising!');
+        continue;
+      }
+      const dx = w.player.x - cop.x;
+      const dz = w.player.z - cop.z;
+      const d = Math.hypot(dx, dz);
+      const heading = Math.atan2(dx, dz);
+      // Light bar flash.
+      const flip = Math.floor(performance.now() / 260) % 2 === 0;
+      if (cop.mesh.userData.lightBarA) cop.mesh.userData.lightBarA.visible = flip;
+      if (cop.mesh.userData.lightBarB) cop.mesh.userData.lightBarB.visible = !flip;
+      if (d > 2.0) {
+        w.drive.stepCar(cop, dt, heading, 1);
       } else {
-        this.bustTimer = 0;
+        // On top of the player: hold still (the arrest happens below).
+        cop.vx *= Math.exp(-dt * 4);
+        cop.vz *= Math.exp(-dt * 4);
+        cop.x += cop.vx * dt;
+        cop.z += cop.vz * dt;
+        cop.mesh.position.set(cop.x, 0, cop.z);
+      }
+      // Cops shoot at a player on foot from three stars up.
+      cop.shootTimer -= dt;
+      if (stars >= 3 && !w.player.inCar && cop.shootTimer <= 0 && d < 32 && !w.ended) {
+        cop.shootTimer = 1.3 + Math.random() * 0.6;
+        w.fx.muzzle(cop.x + Math.sin(heading) * 1.5, 1.4, cop.z + Math.cos(heading) * 1.5, heading);
+        w.sfx.shot();
+        if (Math.random() < 0.22) {
+          const died = w.walker.damage(TUNE.police.copDamage);
+          w.hud.toast('A cop winged you!');
+          if (died) w.endGame('wasted', 'The Solmar PD does not miss twice.');
+        }
+      }
+      // Arrest: on foot, an officer within bust radius holds the player.
+      if (!w.player.inCar && d <= TUNE.police.bustRadius && !w.ended) {
+        arresting = true;
+      }
+    }
+    if (arresting) {
+      this.arrestTimer += dt;
+      if (this.arrestTimer === dt || Math.floor(this.arrestTimer) !== Math.floor(this.arrestTimer - dt)) {
+        w.hud.toast(`An officer has you — ${Math.max(0, TUNE.police.arrestHoldSeconds - this.arrestTimer).toFixed(1)}s to break away!`);
+      }
+      if (this.arrestTimer >= TUNE.police.arrestHoldSeconds) {
+        this.arrestTimer = 0;
+        w.endGame('busted', 'The Solmar PD booked you. Bail was not cheap.');
       }
     } else {
-      this.bustTimer = 0;
-    }
-    // Heat decay: normal 26s per star; hidden (crouched + far from
-    // every unit + not lit by the heli) cools in 14s per star.
-    if (this.wanted > 0) {
-      const nearUnit = this._nearestUnitDist();
-      const hidden = p.crouch && nearUnit > 40 && !world.heli.lit;
-      const coolTime = hidden ? TUNE.hiddenDecaySec : TUNE.normalDecaySec;
-      this.decayTimer += dt;
-      if (this.decayTimer >= coolTime) {
-        this.decayTimer = 0;
-        this.setWanted(this.wanted - 1);
-        world.hud.toast(this.wanted > 0 ? 'Heat dropping…' : 'You lost them.');
-      }
-    }
-    // Safehouse: cool one star per 10s and heal 6/s while inside.
-    const sh = TUNE.landmarks.safehouse;
-    if (dist2d(p.pos.x, p.pos.z, sh.x, sh.z) < 16) {
-      if (p.health < TUNE.maxHealth) {
-        p.health = Math.min(TUNE.maxHealth, p.health + TUNE.safehouseHealPerSec * dt);
-      }
-      if (this.wanted > 0) {
-        this.decayTimer += dt * (TUNE.normalDecaySec / TUNE.safehouseCoolSec - 1);
-      }
+      this.arrestTimer = 0;
     }
   }
 }
