@@ -67,7 +67,7 @@ createServer((request, response) => {
     'content-type': MIME[extname(file).toLowerCase()] ?? 'application/octet-stream',
     'content-length': size,
     'cache-control': 'no-store',
-    server: 'solmar-bay-dev/3',
+    server: 'solmar-bay-dev/4',
   };
   if (request.method === 'HEAD') {
     response.writeHead(200, headers).end();
@@ -76,6 +76,6 @@ createServer((request, response) => {
   response.writeHead(200, headers);
   createReadStream(file).pipe(response);
 }).listen(port, '127.0.0.1', () => {
-  console.log(`Solmar Bay v3 — game/ is on http://localhost:${port}`);
+  console.log(`Solmar Bay v4 — game/ is on http://localhost:${port}`);
   console.log('Open it in a desktop browser. Keyboard + mouse, no network needed.');
 });

@@ -1,8 +1,9 @@
-// Pedestrians v2: Solmar Bay locals with real variety — different heights,
+// Pedestrians v4: Solmar Bay locals with real variety — different heights,
 // skin tones, shirts and a few hats, plus joggers who run the beachfront
 // and a couple of regulars who wait at the bus stops. They stroll the
-// sidewalks, turn at intersections, and scatter from a fast car or a gunshot.
-// Hit one with a car and the wanted level rises.
+// sidewalks, turn at intersections, and scatter from a fast car, a gunshot
+// — or the helicopter's searchlight sweeping the street. Hit one with a
+// car and the wanted level rises.
 import { CFG, STREET_LINES } from './config.js';
 import { collideCircle } from './city.js';
 
@@ -82,6 +83,12 @@ export class Pedestrians {
   update(dt, world) {
     const playerPos = world.player.inCar ? world.player.inCar.pos : world.player.pos;
     const playerSpeed = world.player.inCar ? Math.abs(world.player.inCar.speed) : world.player.speed;
+    // v4: when the chopper's searchlight sweeps the street, the locals run
+    // from the lit patch — the sky itself is a scare now.
+    if (world.heli && world.heli.active) {
+      const lit = world.heli.litPos();
+      if (lit) this.scatterFrom(lit, 18);
+    }
     for (const p of this.list) {
       if (p.down > 0) {
         p.downTimer += dt;

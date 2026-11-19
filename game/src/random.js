@@ -1,6 +1,7 @@
-// Seeded randomness: the city, traffic, pedestrians and collectibles are
-// all built from one seed, so every load — and every screenshot — sees the
-// same Solmar Bay. Nothing in the game reads Math.random() for layout.
+// Seeded randomness: the city, traffic, pedestrians, collectibles and the
+// garage's daily deal are all built from one seed, so every load — and
+// every screenshot — sees the same Solmar Bay. Nothing in the game reads
+// Math.random() for layout.
 export function mulberry32(seed) {
   let a = seed >>> 0;
   return function next() {
@@ -27,6 +28,19 @@ export class Rng {
   }
   chance(p) {
     return this.next() < p;
+  }
+
+  // Pick one item from a list of { item, weight } entries, in proportion
+  // to their weights. The garage uses it for its daily deal.
+  weightedPick(entries) {
+    let total = 0;
+    for (const e of entries) total += e.weight;
+    let roll = this.next() * total;
+    for (const e of entries) {
+      roll -= e.weight;
+      if (roll <= 0) return e.item;
+    }
+    return entries[entries.length - 1].item;
   }
   // A shuffled copy of a list (Fisher–Yates, driven by this seed).
   shuffle(list) {

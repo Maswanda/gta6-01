@@ -1,11 +1,11 @@
-// HUD v3: cash, wanted stars, health and stamina, the current weapon,
+// HUD v4: cash, wanted stars, health and stamina, the current weapon,
 // speed, the mission objective, a mission tracker (M lists every job with
 // its status), and a bigger minimap with district names, collectible dots,
 // side-activity markers and red crime blips — all DOM + one 2D canvas,
 // drawn every frame from the live game state. Also owns the start / pause /
-// busted screens. v3 adds a floating cash popup on every payout, wanted
-// stars that pulse when the level changes, a banner pop-in, a crime
-// indicator and a day/night readout.
+// busted screens. v4 adds the radio readout (current station, every frame),
+// a helicopter warning while the air unit is up, the garage's owned cars
+// in the tracker, and the chopper + safehouse markers on the minimap.
 import { CFG, STREET_LINES, districtAt } from './config.js';
 
 export class HUD {
@@ -15,7 +15,7 @@ export class HUD {
       'ammo', 'weapon', 'speed', 'district', 'objective', 'objective-text', 'objective-dist',
       'prompt', 'message', 'banner', 'banner-title', 'banner-sub', 'menu', 'pause', 'end',
       'end-title', 'end-sub', 'minimap', 'mission-list', 'timer', 'save-note', 'btn-continue',
-      'crime-indicator', 'daynight', 'cash-popup']) {
+      'crime-indicator', 'daynight', 'cash-popup', 'radio', 'heli-indicator']) {
       this.el[id] = document.getElementById(id);
     }
     this.minimap = this.el.minimap.getContext('2d');
@@ -117,7 +117,15 @@ export class HUD {
     const taxi = side.taxiBest ? `Taxi best ${Math.round(side.taxiBest)}s (${side.taxiRuns} runs)` : 'Taxi — not run yet';
     const race = side.raceBest ? `Race best ${Math.round(side.raceBest)}s (${side.raceRuns} runs)` : 'Street race — not run yet';
     const crime = world.crime ? `Crimes stopped ${world.crime.interventions} (seen ${world.crime.eventsSeen})` : '';
-    this.el['mission-list'].innerHTML = `<b>STORY</b>${rows}<b>SIDE JOBS</b><div>${coins}</div><div>${taxi}</div><div>${race}</div><div>${crime}</div>`;
+    // v4: the garage's cars and the radio station, so the tracker shows the
+    // whole run — story, side jobs, rides and music.
+    const garage = world.garage
+      ? (world.garage.owned.length
+        ? `Rico's garage: ${world.garage.owned.map((id) => world.garage.item(id).name).join(', ')}${world.garage.activeId ? ` — driving ${world.garage.item(world.garage.activeId).name}` : ''}`
+        : "Rico's garage: no cars yet — buy one at the garage (B)")
+      : '';
+    const radio = world.radio ? `Radio: ${world.radio.stationName()}` : '';
+    this.el['mission-list'].innerHTML = `<b>STORY</b>${rows}<b>SIDE JOBS</b><div>${coins}</div><div>${taxi}</div><div>${race}</div><div>${crime}</div><b>GARAGE & RADIO</b><div>${garage}</div><div>${radio}</div>`;
     this.el['mission-list'].style.display = 'block';
   }
 
@@ -159,6 +167,21 @@ export class HUD {
       const hh = String(hour).padStart(2, '0');
       const mn = String(mm).padStart(2, '0');
       this.el.daynight.textContent = n > 0.5 ? `🌙 NIGHT ${hh}:${mn}` : `☀️ DAY ${hh}:${mn}`;
+    }
+    // v4: the radio readout — the current station, in every frame — and the
+    // helicopter warning while the air unit is up.
+    if (this.el.radio && world.radio) {
+      this.el.radio.textContent = world.radio.on ? `♪ ${world.radio.stationName()}` : '♪ RADIO OFF — press V';
+    }
+    if (this.el['heli-indicator'] && world.heli) {
+      if (world.heli.active) {
+        this.el['heli-indicator'].textContent = world.heli.spotlightOnPlayer()
+          ? '🚁 IN THE SPOTLIGHT — break the beam!'
+          : '🚁 PD AIR UNIT OVERHEAD';
+        this.el['heli-indicator'].style.display = 'block';
+      } else {
+        this.el['heli-indicator'].style.display = 'none';
+      }
     }
     this.el['health-fill'].style.width = `${Math.max(0, p.health)}%`;
     this.el['health-fill'].style.background = p.health > 50 ? '#58c96b' : p.health > 25 ? '#e8a33a' : '#d83a3a';
@@ -285,6 +308,24 @@ export class HUD {
         c.strokeStyle = '#7a0000';
         c.stroke();
       }
+    }
+    // v4: the safehouse is a green square on the map — the place to rest
+    // the heat — and the chopper is a pulsing orange dot while it is up.
+    const sh = world.city.landmarks.safehouse;
+    if (sh) {
+      c.fillStyle = '#58c96b';
+      c.fillRect(toX(sh.x) - 4, toZ(sh.z) - 4, 8, 8);
+      c.strokeStyle = '#1e5a2a';
+      c.strokeRect(toX(sh.x) - 4, toZ(sh.z) - 4, 8, 8);
+    }
+    if (world.heli && world.heli.active) {
+      const pulse = 5 + Math.sin(performance.now() / 150) * 2;
+      c.fillStyle = '#ff8a2a';
+      c.beginPath();
+      c.arc(toX(world.heli.pos.x), toZ(world.heli.pos.z), pulse, 0, Math.PI * 2);
+      c.fill();
+      c.strokeStyle = '#7a3a00';
+      c.stroke();
     }
     // Traffic (grey), police (red/blue flash), player (white arrow).
     c.fillStyle = '#9aa2ad';

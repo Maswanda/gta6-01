@@ -1,7 +1,9 @@
-// The wanted system v2: stars rise when the player breaks the law, and the
+// The wanted system v4: stars rise when the player breaks the law, and the
 // response escalates with them — more interceptors, faster cars, harder
-// rams, and at four stars a roadblock goes up on the street ahead. Lay low
-// out of sight and the heat cools off one star at a time.
+// rams, and at four stars a roadblock goes up on the street ahead — and the
+// PD helicopter lifts off to pin the player in its searchlight. Lay low out
+// of sight and the heat cools off one star at a time; under the spotlight,
+// hiding does not work.
 import { CFG, STREET_LINES } from './config.js';
 import { Car } from './vehicles.js';
 
@@ -118,7 +120,10 @@ export class Police {
       // radius — 45u on foot or in a car, 75u while crouched. Heat cools
       // off in 14s when hidden, not 26s, so losing the tail matters.
       const hiddenRadius = player.crouching ? CFG.hiddenRadiusCrouched : CFG.hiddenRadius;
-      const hidden = nearest === null || nearest > hiddenRadius;
+      // v4: hiding works only when the chopper is not pinning the player in
+      // its searchlight — the air unit sees straight through a crouch.
+      const lit = world.heli && world.heli.spotlightOnPlayer();
+      const hidden = (nearest === null || nearest > hiddenRadius) && !lit;
       if (hidden && this.decayTimer > CFG.wantedDecayHiddenSeconds) {
         this.wanted -= 1;
         this.decayTimer = 0;

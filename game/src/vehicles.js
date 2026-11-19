@@ -1,8 +1,9 @@
 // Cars: the player's ride, parked cars to steal, AI traffic on the avenues
-// and police interceptors. Four drivable types — sedan, sports, van, truck —
-// each with its own handling and its own body, so stealing a sports car
-// actually feels different from stealing a van. One arcade driving model,
-// tuned per type, with circle-vs-building and car-vs-car bumps.
+// and police interceptors. Five drivable types — sedan, sports, van, truck
+// and the muscle car, Rico's garage-only flagship — each with its own
+// handling and its own body, so stealing a sports car actually feels
+// different from stealing a van. One arcade driving model, tuned per type,
+// with circle-vs-building and car-vs-car bumps.
 import { CFG, STREET_LINES, VEHICLE_TYPES } from './config.js';
 import { collideCircle } from './city.js';
 
@@ -43,6 +44,25 @@ export function makeCarMesh(color, isPolice, type) {
     cab.position.set(0, 1.5, 1.7);
     g.add(cab);
     for (const [wx, wz] of [[-0.95, 1.5], [0.95, 1.5], [-0.95, -1.5], [0.95, -1.5]]) addWheel(wx, wz);
+  } else if (type === 'muscle') {
+    // Muscle car: a long hood with a scoop, a racing stripe down the
+    // middle, and wide rear wheels. Rico's flagship — garage only.
+    const body = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.6, 4.8), paint);
+    body.position.y = 0.55;
+    g.add(body);
+    const scoop = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.22, 1.0), tyre);
+    scoop.position.set(0, 0.95, 1.2);
+    g.add(scoop);
+    const stripe = new THREE.Mesh(
+      new THREE.BoxGeometry(0.5, 0.04, 4.82),
+      new THREE.MeshLambertMaterial({ color: 0x141518 }),
+    );
+    stripe.position.y = 0.87;
+    g.add(stripe);
+    const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.5, 2.0), glass);
+    cabin.position.set(0, 1.05, -0.4);
+    g.add(cabin);
+    for (const [wx, wz] of [[-0.95, 1.6], [0.95, 1.6], [-1.0, -1.6], [1.0, -1.6]]) addWheel(wx, wz);
   } else if (type === 'truck') {
     // Cab up front, open bed behind.
     const cab = new THREE.Mesh(new THREE.BoxGeometry(2.0, 1.3, 1.6), paint);
@@ -107,6 +127,10 @@ export class Car {
     this.isPlayer = false;
     this.stolen = false;
     this.parked = !!opts.parked;
+    // A car bought from Rico's carries its garage id, so the garage can
+    // find it again to sell it — and so a taxi fare in it pays extra.
+    this.garageId = opts.garageId || null;
+    this.garageOwned = !!opts.garageId;
     this.alive = true;
     this.mesh = makeCarMesh(color, this.isPolice, this.type);
     this.mesh.position.copy(this.pos);
@@ -347,4 +371,12 @@ export function spawnCasinoSports(scene, landmarks) {
     cars.push(car);
   }
   return cars;
+}
+
+// A car bought from Rico's garage: parked on the street outside it, owned
+// by the player, and tagged with its garage id so the garage can sell it
+// back and the taxi meter can pay extra for it.
+export function spawnOwnedCar(scene, type, x, z, garageId) {
+  const car = new Car(scene, x, z, Math.PI / 2, 0xe8c33a, { type, parked: true, garageId });
+  return car;
 }

@@ -1,11 +1,12 @@
-// Dynamic Crime System v3: Solmar Bay does not wait for a mission to feel
+// Dynamic Crime System v4: Solmar Bay does not wait for a mission to feel
 // alive. Between story jobs, ambient crime erupts on its own — a thug
 // jacking a parked car, a fugitive sports car fleeing two interceptors, a
 // thief working the bank ATM — and the player can step in for a reward, or
 // ignore it and watch it fizzle. The police dispatch to active events, and
 // nearby pedestrians scatter. The player can also rob the ATM themselves
 // (press E at the bank, +$250 and +2 wanted, on a cooldown). Events are
-// seeded, so the same city spawns the same sequence of crimes.
+// seeded, so the same city spawns the same sequence of crimes. v4: stopping
+// a crime while the chopper is overhead pays a $50 air-assist bonus.
 import { CFG } from './config.js';
 import { Rng } from './random.js';
 import { Car } from './vehicles.js';
@@ -243,6 +244,9 @@ export class CrimeSystem {
 
   resolve(world, reward, text) {
     this.interventions += 1;
+    // v4: if the chopper is overhead when a crime is stopped, the PD pays
+    // a $50 air-assist bonus on top of the reward.
+    if (world.heli && world.heli.active) reward += 50;
     world.player.cash += reward;
     world.hud.showCashPopup(reward);
     world.hud.showBanner('CRIME STOPPED', `${text} — +$${reward}`);

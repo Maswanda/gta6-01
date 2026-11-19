@@ -1,6 +1,8 @@
 // Effects: a small pooled particle system for the game's feedback — tyre
 // smoke when a car slides, sparks on a crash, muzzle flashes and the burst
-// when an enemy goes down. One shared pool, no allocations in the hot loop.
+// when an enemy goes down. v4 adds the rotor wash: dust kicked up in a ring
+// on the street below the helicopter. One shared pool, no allocations in
+// the hot loop.
 const MAX_PARTICLES = 140;
 
 export class Effects {
@@ -97,6 +99,23 @@ export class Effects {
       0.09,
       1.6,
     );
+  }
+
+  // Rotor wash: a ring of dust puffs on the street under the helicopter,
+  // blown outward from the downwash. Called on a short timer, not every
+  // frame, so it reads as a gust rather than a cloud.
+  rotorWash(pos) {
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2 + Math.random() * 0.5;
+      const r = 3.5 + Math.random() * 1.5;
+      this.spawn(
+        new THREE.Vector3(pos.x + Math.cos(a) * r, 0.3, pos.z + Math.sin(a) * r),
+        0xb8a888,
+        new THREE.Vector3(Math.cos(a) * 2.5, 0.6 + Math.random() * 0.5, Math.sin(a) * 2.5),
+        0.7 + Math.random() * 0.3,
+        1.2 + Math.random() * 0.6,
+      );
+    }
   }
 
   update(dt) {

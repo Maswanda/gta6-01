@@ -1,8 +1,9 @@
-// Jax Marlowe on foot v2: an articulated figure (body, head, cap, legs
+// Jax Marlowe on foot v4: an articulated figure (body, head, cap, legs
 // that swing when walking) with camera-relative WASD movement. Sprinting is
 // faster but drains a stamina bar that refills when he walks — so a long
-// chase on foot is a decision, not a default. When driving, the figure
-// hides inside the car.
+// chase on foot is a decision, not a default. Resting at the safehouse
+// refills stamina twice as fast while the heat cools off. When driving, the
+// figure hides inside the car.
 import { CFG } from './config.js';
 import { collideCircle } from './city.js';
 
@@ -14,6 +15,9 @@ export class Player {
     this.health = CFG.playerHealth;
     this.cash = 0;
     this.stamina = CFG.staminaMax;
+    // True while Jax is sheltering at the safehouse — the garage system
+    // sets it every frame, and stamina refills twice as fast there.
+    this.resting = false;
     this.inCar = null;
     this.moving = false;
     this.sprinting = false;
@@ -75,7 +79,7 @@ export class Player {
     // Sprint only while there is stamina left; it refills while walking.
     this.sprinting = wantRun && this.stamina > 1 && !this.crouching;
     if (this.sprinting) this.stamina = Math.max(0, this.stamina - CFG.staminaDrain * dt);
-    else this.stamina = Math.min(CFG.staminaMax, this.stamina + CFG.staminaRegen * dt);
+    else this.stamina = Math.min(CFG.staminaMax, this.stamina + CFG.staminaRegen * (this.resting ? 2 : 1) * dt);
     const top = this.crouching ? CFG.walkSpeed * CFG.crouchSpeed
       : this.sprinting ? CFG.runSpeed : CFG.walkSpeed;
     const fx = Math.sin(camYaw);

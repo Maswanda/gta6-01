@@ -1,8 +1,9 @@
-// Combat v2: fists plus three guns — pistol, shotgun and SMG — with per-
+// Combat v4: fists plus three guns — pistol, shotgun and SMG — with per-
 // weapon magazines, switching on 1/2/3 (Q cycles), and two enemy kinds: the
 // Kestrel brawlers who close in and swing, and the shooters who keep their
 // distance and fire back. Muzzle flashes and takedown bursts run through
-// the effects pool.
+// the effects pool. v4: the same fire can bring down the PD helicopter
+// overhead — enough hits and the air unit breaks off.
 import { CFG, WEAPONS } from './config.js';
 
 export class Combat {
@@ -219,6 +220,19 @@ export class Combat {
         hitAny = true;
         world.effects.burst(best.pos, 0xff5a4a, 4, 2, 0.35);
         if (best.hp <= 0) this.dropEnemy(best, world);
+      }
+    }
+    // v4: the same burst can hit the helicopter overhead — if the chopper
+    // is inside the firing arc, the pellets find it too.
+    if (world.heli && world.heli.active) {
+      const hp3 = world.heli.pos;
+      const hdx = hp3.x - p.pos.x;
+      const hdz = hp3.z - p.pos.z;
+      const halong = hdx * f.x + hdz * f.z;
+      const hside = Math.abs(hdx * f.z - hdz * f.x);
+      if (halong > 0 && halong < def.range + 30 && hside < 3) {
+        world.heli.damage(def.damage, world);
+        hitAny = true;
       }
     }
     if (hitAny) world.hud.flashMessage('Hit!');

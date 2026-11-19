@@ -1,7 +1,8 @@
-// Side activities: the things that make Solmar Bay worth roaming when no
+// Side activities v4: the things that make Solmar Bay worth roaming when no
 // mission is live — a taxi run, a hidden collectible hunt and a checkpoint
 // street race. All three are repeatable, pay cash, and save their best
 // results. Interact with T; collectibles are picked up by walking over them.
+// v4: a taxi fare in a car bought from Rico's garage pays $25 extra.
 import { CFG } from './config.js';
 
 const COLLECTIBLE_SPOTS = [
@@ -214,12 +215,15 @@ export class SideActivities {
         if (!this.taxiBest || spent < this.taxiBest) this.taxiBest = spent;
         // v3: a night shift pays a bonus on top of the fare.
         const night = world.city && world.city.nightness() > 0.5;
-        const fare = 80 + (night ? CFG.taxiNightBonus : 0);
+        // v4: a fare in a car bought from Rico's pays $25 extra — the
+        // regulars know a garage car is a clean, fast ride.
+        const ownRide = world.player.inCar && world.player.inCar.garageOwned;
+        const fare = 80 + (night ? CFG.taxiNightBonus : 0) + (ownRide ? 25 : 0);
         world.player.cash += fare;
         world.hud.showCashPopup(fare);
         this.taxi.state = 'idle';
         this.taxiBeacon.visible = false;
-        world.hud.showBanner('FARE COMPLETE', `+$${fare}${night ? ' (night bonus!)' : ''} — ${Math.round(spent)}s (best ${Math.round(this.taxiBest)}s)`);
+        world.hud.showBanner('FARE COMPLETE', `+$${fare}${night ? ' (night bonus!)' : ''}${ownRide ? ' (garage ride +$25)' : ''} — ${Math.round(spent)}s (best ${Math.round(this.taxiBest)}s)`);
         world.sound.jingle();
         world.save.save();
       }

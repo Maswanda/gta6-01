@@ -1,8 +1,9 @@
-// Saving v3: cash, story progress, weapons and side-activity results
-// persist in localStorage so the player can continue after closing the tab.
-// Autosaves on mission complete and on every side-job payout. The v3 key is
-// separate from v2's, so an old save never loads into the new story. v3
-// also keeps a crime tally: how many ambient events the player stopped.
+// Saving v4: cash, story progress, weapons, side-activity results and the
+// garage persist in localStorage so the player can continue after closing
+// the tab. Autosaves on mission complete and on every side-job payout. The
+// v3 key is separate from v2's, so an old save never loads into the new
+// story. v4 also keeps a crime tally: how many ambient events the player
+// stopped, and which cars Rico's garage holds for them.
 const KEY = 'solmar-bay-heatwave-save-v3';
 
 export class Save {
@@ -32,6 +33,7 @@ export class Save {
         health: w.player.health,
         side: w.side.getSave(),
         crime: w.crime ? w.crime.getSave() : null,
+        garage: w.garage ? w.garage.getSave() : null,
         savedAt: Date.now(),
       };
       localStorage.setItem(KEY, JSON.stringify(data));
@@ -58,6 +60,10 @@ export class Save {
       w.missions.step = 0;
       w.side.applySave(d.side);
       if (w.crime) w.crime.applySave(d.crime);
+      if (w.garage) {
+        w.garage.applySave(d.garage);
+        w.garage.respawnOwned(w);
+      }
       return true;
     } catch {
       return false;

@@ -1,5 +1,5 @@
-// The story v3: Jax Marlowe, a retired getaway driver in Solmar Bay, gets
-// pulled back in by Mara Voss. Ten missions now, each a chain of steps —
+// The story v4: Jax Marlowe, a retired getaway driver in Solmar Bay, gets
+// pulled back in by Mara Voss. Twelve missions now, each a chain of steps —
 // go to, talk, steal, deliver on a timer, fight, race, escape — with a
 // beacon in the world, a blip on the minimap and a payout at the end of
 // each one. Finishing the docks unlocks the shotgun; beating the rival crew
@@ -171,6 +171,29 @@ export class Missions {
           { text: 'Getaway — drive the cash to the safehouse, beat the clock!', target: L.safehouse, radius: 5, type: 'deliver', time: CFG.heistTimeLimit },
         ],
       },
+      {
+        id: 'air-support',
+        title: '11 — Air Support',
+        story: 'The PD put a chopper over the Bay. Lose the air unit and get home — the spotlight is the real enemy.',
+        reward: CFG.mission11Reward,
+        steps: [
+          { text: 'Make some noise — the PD lifts the chopper at 4 stars', target: null, radius: 0, type: 'heli-trigger' },
+          { text: 'Break the spotlight — lose the chopper and reach the safehouse', target: L.safehouse, radius: 5, type: 'escape' },
+        ],
+      },
+      {
+        id: 'last-run',
+        title: '12 — The Last Run',
+        story: "Mara's last job. One ledger, one pier, no heat. Bring the book home and the Bay is yours.",
+        reward: CFG.mission12Reward,
+        steps: [
+          { text: 'Talk to Rico at the garage (press E)', target: L.garage, radius: 5, type: 'talk',
+            talk: 'Rico: "Last one, Jax. The ledger goes to the pier — quiet, no heat."',
+            gives: 'package' },
+          { text: 'Carry the ledger to the pier, beat the clock!', target: L.pier, radius: 6, type: 'deliver', time: 150 },
+          { text: 'Get home to the safehouse', target: L.safehouse, radius: 5, type: 'goto' },
+        ],
+      },
     ];
   }
 
@@ -215,6 +238,9 @@ export class Missions {
     // A step that names a wanted level raises the heat when it starts
     // (the vault guards trip the alarm; a talk step raises it on the talk).
     if (s.wanted && s.type !== 'talk') world.police.addWanted(s.wanted, world);
+    // v4: the air-support step kicks the heat straight to four stars, so
+    // the chopper lifts off the moment the job starts.
+    if (s.type === 'heli-trigger') world.police.addWanted(CFG.heliWanted, world);
     if (s.type === 'defeat' && s.enemies) {
       const base = this.landmarks[s.center || 'docks'];
       world.combat.spawnEnemies(world, s.enemies.map((e) => ({
@@ -303,6 +329,7 @@ export class Missions {
     if (s.type === 'deliver') {
       if (this.current().id === 'the-informant' && !this.hasPackage) return;
       if (this.current().id === 'hot-delivery' && !this.hasPackage) return;
+      if (this.current().id === 'last-run' && !this.hasPackage) return;
       if (this.current().id === 'smash-and-grab' && !world.player.inCar) return;
       const d = Math.hypot(p.x - s.target.x, p.z - s.target.z);
       if (d < s.radius) {
@@ -319,6 +346,11 @@ export class Missions {
       } else if (d < s.radius) {
         world.hud.setPrompt('Lose the cops first!');
       }
+      return;
+    }
+    if (s.type === 'heli-trigger') {
+      // The step is done once the air unit is overhead.
+      if (world.heli && world.heli.active) this.advance(world);
       return;
     }
     if (s.target) {

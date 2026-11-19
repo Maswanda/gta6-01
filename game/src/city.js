@@ -1,8 +1,10 @@
-// Solmar Bay v2: a sun-soaked coastal city with four districts, each with
+// Solmar Bay v4: a sun-soaked coastal city with four districts, each with
 // its own look — Downtown's towers, Old Town's brick rows, Northside's glass
 // and the Marina's beachfront — plus a pier, a lighthouse, a ferris wheel
 // and a marina. One painted ground texture carries the roads; buildings are
-// textured boxes; the sky is a gradient dome with drifting clouds.
+// textured boxes; the sky is a gradient dome with drifting clouds. v4 puts
+// a sign on Rico's garage and a porch light on the safehouse, so the two
+// places the new systems live are easy to find after dark.
 import { CFG, STREET_LINES, districtAt } from './config.js';
 
 const WORLD = CFG.worldHalf * 2;
@@ -390,6 +392,22 @@ export function buildCity(scene, rng) {
   carpet.position.set(78, 0.07, -9.5);
   group.add(carpet);
   landmarks.casinoEntrance = new THREE.Vector3(78, 0, -10);
+  // v4: Rico's garage gets its own sign on the south face, and the
+  // safehouse gets a green porch light — the two places the new systems
+  // live should be easy to find, day or night.
+  const garageTex = makeBillboardTexture("RICO'S GARAGE", '#ffb23a', '#1a1208');
+  const garageSign = new THREE.Mesh(
+    new THREE.PlaneGeometry(16, 4),
+    new THREE.MeshBasicMaterial({ map: garageTex }),
+  );
+  garageSign.position.set(156, 9, 114.4);
+  group.add(garageSign);
+  const porch = new THREE.Mesh(
+    new THREE.BoxGeometry(0.8, 0.5, 0.3),
+    new THREE.MeshLambertMaterial({ color: 0x7ddb8a, emissive: 0x3a8a4a }),
+  );
+  porch.position.set(26, 4, 189.2);
+  group.add(porch);
   // Old Town clock tower.
   const clock = landmarkBuilding(-130, 26, 14, 14, 34, 0xc0a080, 'clockTower', oldTownFacades);
   const clockFace = new THREE.Mesh(

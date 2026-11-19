@@ -1,7 +1,8 @@
 // All sound is synthesised with WebAudio — no audio files, no network.
-// v2 adds a wanted sting, a pickup chime, a car horn, tyre skid, a door
-// slam, race countdown beeps and a low ambient pad that hums under the city,
-// on top of the engine, siren, gunshots, punches and mission jingles.
+// v4 adds the helicopter's rotor chop and a station-change blip for the
+// radio, on top of v2's wanted sting, pickup chime, car horn, tyre skid,
+// door slam, race countdown beeps and low ambient pad, and the engine,
+// siren, gunshots, punches and mission jingles.
 export class SoundBank {
   constructor() {
     this.ctx = null;
@@ -11,6 +12,9 @@ export class SoundBank {
     this.sirenOsc = null;
     this.sirenGain = null;
     this.sirenTimer = 0;
+    this.rotorOsc = null;
+    this.rotorGain = null;
+    this.rotorTimer = 0;
     this.padOsc = null;
     this.padGain = null;
     this.enabled = true;
@@ -86,6 +90,56 @@ export class SoundBank {
     const high = Math.floor(this.sirenTimer / 0.42) % 2 === 0;
     this.sirenOsc.frequency.setTargetAtTime(high ? 820 : 620, this.ctx.currentTime, 0.03);
     this.sirenGain.gain.setTargetAtTime(0.05, this.ctx.currentTime, 0.1);
+  }
+
+  // The helicopter's rotor: a low sawtooth thud that chops about twelve
+  // times a second while the air unit is up, fading out when it leaves.
+  rotor(on, dt) {
+    if (!this.ctx) return;
+    if (on && !this.rotorOsc) {
+      this.rotorOsc = this.ctx.createOscillator();
+      this.rotorOsc.type = 'sawtooth';
+      this.rotorOsc.frequency.value = 27;
+      this.rotorGain = this.ctx.createGain();
+      this.rotorGain.gain.value = 0.0001;
+      this.rotorOsc.connect(this.rotorGain);
+      this.rotorGain.connect(this.master);
+      this.rotorOsc.start();
+      this.rotorTimer = 0;
+    }
+    if (!this.rotorOsc) return;
+    const now = this.ctx.currentTime;
+    if (on) {
+      this.rotorTimer += dt;
+      // The chop: the gain pulses up and down with the rotor's beat.
+      const chop = 0.5 + 0.5 * Math.sin(this.rotorTimer * Math.PI * 2 * 12);
+      this.rotorGain.gain.setTargetAtTime(0.02 + 0.03 * chop, now, 0.03);
+    } else {
+      this.rotorGain.gain.setTargetAtTime(0.0001, now, 0.1);
+      const osc = this.rotorOsc;
+      setTimeout(() => { try { osc.stop(); } catch (e) { /* already stopped */ } }, 600);
+      this.rotorOsc = null;
+      this.rotorGain = null;
+    }
+  }
+
+  // A short two-note blip when the radio changes station.
+  stationBlip() {
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+    for (const [offset, freq] of [[0, 880], [0.07, 1174.66]]) {
+      const osc = this.ctx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      const gain = this.ctx.createGain();
+      gain.gain.setValueAtTime(0.0001, now + offset);
+      gain.gain.exponentialRampToValueAtTime(0.08, now + offset + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + offset + 0.09);
+      osc.connect(gain);
+      gain.connect(this.master);
+      osc.start(now + offset);
+      osc.stop(now + offset + 0.12);
+    }
   }
 
   blip(freq, dur, type, vol) {
