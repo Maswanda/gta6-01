@@ -1,42 +1,74 @@
-# Solmar Bay: Heatwave
+# Solmar Bay: Heatwave v4
 
-[![Make.fun GTA 6](https://make.fun/badge/gta6-01.svg)](https://make.fun/bounty/gta6-01)
-[![Rank](https://make.fun/badge/gta6-01/Maswanda/gta6-01/rank.svg)](https://make.fun/bounty/gta6-01)
-[![Reward](https://make.fun/badge/gta6-01/Maswanda/gta6-01/reward.svg)](https://make.fun/bounty/gta6-01)
+A 3D open-world action game for the Make GTA 6 competition — built
+entirely from spec, 100% self-contained (no network, no CDN; three.js
+is vendored under `game/vendor/`).
 
-An original open-world crime game built for the [Make GTA 6 bounty](https://make.fun/bounty/gta6-01) on make.fun.
+## The game
 
-## The game (v4)
+You are Vic, a driver new to Solmar Bay. Twelve story missions take
+you from a first meeting with Mara at the pier to a casino vault heist,
+a four-star helicopter chase, and one last run for Rico's ledger.
 
-Solmar Bay: Heatwave is a 3D open-world crime game (three.js) set in the sun-soaked coastal city of Solmar Bay. Drive and steal cars, dodge traffic and pedestrians, climb the wanted ladder as the police respond — at four stars a helicopter lifts off and pins you in its searchlight — and run a chain of twelve missions to make your name, ending with the Last Run at the pier.
-
-- Four districts — Downtown, Old Town, Northside and the Marina — with a pier, lighthouse, ferris wheel, Solmar Tower and clock tower
-- A full day/night cycle (240s): the sun sets, street lamps and neon come on, windows glow, and the Marina and casino read differently after dark
-- Dynamic crime: carjackings, police pursuits and ATM robberies break out on their own; stop them for cash, or rob the ATM yourself (+$250, +2 wanted)
-- Open world on foot and by car, with AI traffic (20 cars) and 28 pedestrians who scatter when a crime breaks out
-- Four drivable vehicle types — sedan, sports car, van, truck — all stealable, each with its own handling, plus drift on hard turns and a police chase that loses your trail when you hide (crouch with C)
-- Wanted level 0–5 with police that escalate: faster interceptors and roadblocks laid ahead of your escape route at 4 stars
-- Twelve chained story missions, plus three side activities: taxi fares (night-shift bonus, +$25 in a garage car), 10 hidden Solmar coins, and a checkpoint street race
-- A PD helicopter at 4–5 stars: it orbits, pins you in a searchlight cone (hiding stops working under the beam), kicks up rotor wash and scatters pedestrians — lose it by breaking the beam, reaching the safehouse, or shooting it down
-- Three procedural radio stations (V to cycle) — Sunset Drive, Heatwave Rock and Night Jazz — all synthesized live with the Web Audio API, station name in the HUD
-- Rico's garage (B at the garage): buy, sell and choose five cars including the garage-only Sunset GT muscle car, with a daily deal; owned cars persist in the save, and the safehouse next door heals you and cools one wanted star every ten seconds
-- Three weapons (pistol, shotgun, SMG) and two enemy kinds (brawlers and shooters)
-- HUD with a bigger minimap (district names, collectible and race markers, red crime blips), a mission tracker (M), stamina, a district readout, a day/night clock and a crime indicator
-- Synthesized audio (engine, sirens, horn, skid, cash register, ambient pad); no network requests — everything runs from static files
-
-## Screenshots
-
-Each shot is staged deterministically with a `?shot=` URL (`shots.json` lists them, seed 11):
-
-1. `1-showcase.jpg` — golden hour over the Marina, radio on (SOLMAR 88.5)
-2. `2-heli.jpg` — five-star helicopter pursuit at night, searchlight on the player
-3. `3-combat.jpg` — the rival-crew fight on the beachfront avenue
-4. `4-garage.jpg` — Rico's garage panel with two cars bought, the Last Run waiting
+- **Open city** — four districts (Marina, Downtown, Old Town,
+  Beachfront), a road grid with traffic and 28 pedestrians, a bay
+  with a pier and marina, landmarks with real signage.
+- **Drive** — four vehicle types, drift handling, police chases,
+  roadblocks at four stars, a helicopter air unit with a searchlight.
+- **Fight** — pistol, shotgun and SMG (unlocked through the story),
+  enemy crews, hitscan shooting, reloads.
+- **Live** — a three-station procedural radio (all synthesized),
+  a Dynamic Crime System (carjacking, ATM robbery, pursuit) with
+  interventions, taxi fares, street races, hidden packages.
+- **Systems** — day/night cycle (240s), wanted heat with hidden
+  decay and safehouse cooldown, garage (buy/sell/select), localStorage
+  saves, a diegetic HUD with a live minimap.
 
 ## Play
 
-Open `game/index.html` in a desktop browser (or run `node serve.ts` and visit http://localhost:8080). Keyboard + mouse.
+```sh
+node serve.ts --port 8321
+# open http://127.0.0.1:8321/
+```
 
-## Entry
+Controls: WASD move/drive, Shift sprint, C crouch, E talk, F enter
+car / punch, G shoot, R reload, T taxi, 1/2/3 weapons, Q radio,
+Esc pause.
 
-Built for [make.fun — Make GTA 6 (gta6-01)](https://make.fun/bounty/gta6-01).
+## Screenshots
+
+Four staged scenes via `?shot=` (seed 11): `showcase`, `heli`,
+`combat`, `garage`. See `shots.json`.
+
+## Dossier
+
+```sh
+MAKEFUN_OUTPUT_DIR=out node main.ts
+```
+
+## Files
+
+| File | What it is |
+| --- | --- |
+| `game/src/main.js` | Boot, game loop, `window.__solmar` API |
+| `game/src/tuning.js` | Constants: city, landmarks, vehicles, weapons, missions |
+| `game/src/city.js` | City layout, collision, day/night clock |
+| `game/src/scene.js` | three.js renderer, landmarks, sky |
+| `game/src/hud.js` | HUD, minimap, menus |
+| `game/src/onfoot.js` | On-foot movement, enter/exit, talk |
+| `game/src/drive.js` | Vehicle physics |
+| `game/src/traffic.js` | Ambient traffic + pedestrians |
+| `game/src/police.js` | Wanted stars, pursuit, roadblocks, bust |
+| `game/src/helicopter.js` | Air unit + searchlight |
+| `game/src/radio.js` | Procedural radio stations |
+| `game/src/garage.js` | Buy/sell/select, safehouse |
+| `game/src/crime.js` | Dynamic Crime System |
+| `game/src/combat.js` | Weapons, enemies, shooting |
+| `game/src/missions.js` | 12-mission story state machine |
+| `game/src/side.js` | Taxi, races, collectibles |
+| `game/src/persist.js` | localStorage save/load |
+| `game/src/effects.js` | Particles, flashes, skid marks |
+| `game/src/shots.js` | `?shot=` scene staging |
+| `game/src/rng.js` | Seeded RNG |
+| `game/src/input.js` | Keyboard/mouse state |
+| `game/src/audio.js` | Synthesized SFX + engine |

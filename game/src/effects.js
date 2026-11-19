@@ -1,146 +1,119 @@
-// Effects: one pooled particle system for the game's feedback — tyre smoke
-// when a car slides, sparks on a crash, muzzle flashes, the burst when an
-// enemy goes down, and the rotor wash: dust kicked up in a ring on the
-// street below the helicopter. One shared pool, no allocations in the hot
-// loop; materials are shared per colour and the fade is done by scale.
-
-const MAX_PARTICLES = 140;
+// effects.js — Cheap visual feedback: muzzle flashes, hit sparks,
+// smoke puffs, skid marks, explosion flashes and screen shake.
+// All pooled and time-based; nothing allocates per frame in steady state.
+import * as THREE from 'three';
 
 export class Effects {
   constructor(scene) {
     this.scene = scene;
-    this.parts = [];
-    this.geo = new THREE.BoxGeometry(0.22, 0.22, 0.22);
-    this.mats = {};
+    this.particles = [];
+    this.skids = [];
+    this.shake = 0;
+    this.flashMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0 });
+    this.flash = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), this.flashMat);
+    this.flash.position.z = -0.5;
+    this.flash.visible = false;
+    // Attach the flash to the camera so it covers the screen.
+    this.flashOnCamera = false;
   }
-
-  mat(color) {
-    if (!this.mats[color]) {
-      this.mats[color] = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.9 });
-    }
-    return this.mats[color];
-  }
-
-  spawn(pos, color, vel, life, size) {
-    if (this.parts.length >= MAX_PARTICLES) {
-      const old = this.parts.shift();
-      this.scene.remove(old.mesh);
-    }
-    const mesh = new THREE.Mesh(this.geo, this.mat(color));
-    mesh.position.copy(pos);
-    mesh.position.y = Math.max(0.15, pos.y);
-    mesh.scale.setScalar(size || 1);
-    this.scene.add(mesh);
-    this.parts.push({ mesh, vel: vel.clone(), life, maxLife: life });
-  }
-
-  // A spray of bits in all directions (impacts, takedowns).
-  burst(pos, color, count, speed, life) {
-    for (let i = 0; i < count; i += 1) {
+  _spawn(pos, color, count, speed, life, size, gravity = -6) {
+    const geo = new THREE.BoxGeometry(size, size, size);
+    for (let i = 0; i < count; i++) {
+      const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 1 });
+      const m = new THREE.Mesh(geo, mat);
+      m.position.copy(pos);
       const a = Math.random() * Math.PI * 2;
-      const up = Math.random() * 2.2 + 0.6;
-      this.spawn(
-        pos,
-        color,
-        new THREE.Vector3(Math.sin(a) * speed, up, Math.cos(a) * speed),
-        (life || 0.7) * (0.6 + Math.random() * 0.7),
-        0.8 + Math.random() * 0.9,
-      );
+      const up = Math.random() * 0.8 + 0.2;
+      this.particles.push({
+        mesh: m,
+        vel: new THREE.Vector3(Math.cos(a) * speed * Math.random(), up * speed, Math.sin(a) * speed * Math.random()),
+        life,
+        maxLife: life,
+        gravity,
+      });
+      this.scene.dynamic.add(m);
     }
   }
-
-  // Grey tyre smoke at a wheel, drifting up and fading.
-  skid(pos) {
-    this.spawn(
-      pos,
-      0x9a9a9a,
-      new THREE.Vector3((Math.random() - 0.5) * 1.2, 1.1 + Math.random(), (Math.random() - 0.5) * 1.2),
-      0.9 + Math.random() * 0.4,
-      1.4 + Math.random() * 0.8,
-    );
+  muzzle(pos, heading) {
+    this._spawn(pos, 0xffd34d, 4, 6, 0.12, 0.09, 0);
   }
-
-  // Hot sparks for a crash or a bullet hitting metal.
-  sparks(pos) {
-    this.burst(pos, 0xffc23a, 7, 3.2, 0.45);
-    this.burst(pos, 0xffffff, 3, 2.0, 0.25);
+  hitSpark(pos) {
+    this._spawn(pos, 0xff6b4d, 6, 5, 0.3, 0.08, -4);
   }
-
-  // A shower of gold when cash changes hands — a takedown, a stopped
-  // crime, an ATM robbery. The coins burst up and rain down.
-  cashShower(pos) {
-    this.burst(pos, 0xffc23a, 14, 3.5, 0.9);
-    this.burst(pos, 0x7ddb8a, 6, 2.5, 0.7);
+  blood(pos) {
+    this._spawn(pos, 0xa02020, 8, 4, 0.4, 0.1, -6);
   }
-
-  // Thick tyre smoke for a drift, bigger than the usual skid puff, with a
-  // spark or two in it.
-  driftSmoke(pos) {
-    this.spawn(
-      pos,
-      0x8a8a8a,
-      new THREE.Vector3((Math.random() - 0.5) * 1.6, 1.4 + Math.random(), (Math.random() - 0.5) * 1.6),
-      1.1 + Math.random() * 0.4,
-      2.0 + Math.random() * 0.8,
-    );
-    this.spawn(
-      pos,
-      0xffc23a,
-      new THREE.Vector3((Math.random() - 0.5) * 2, 1.6 + Math.random(), (Math.random() - 0.5) * 2),
-      0.35,
-      1.0,
-    );
+  smoke(pos) {
+    this._spawn(pos, 0x555555, 3, 1.5, 0.9, 0.3, 1.5);
   }
-
-  // A brief muzzle flash at the gun.
-  muzzle(pos, dir) {
-    this.spawn(
-      pos.clone().addScaledVector(dir, 0.8),
-      0xffe98a,
-      dir.clone().multiplyScalar(2),
-      0.09,
-      1.6,
-    );
+  explosion(pos) {
+    this._spawn(pos, 0xff8a2a, 22, 10, 0.6, 0.22, -2);
+    this._spawn(pos, 0x333333, 10, 4, 1.2, 0.4, 2);
+    this.shake = Math.max(this.shake, 0.7);
   }
-
-  // Rotor wash: a ring of dust puffs on the street under the helicopter,
-  // blown outward from the downwash. Called on a short timer, not every
-  // frame, so it reads as a gust rather than a cloud.
-  rotorWash(pos) {
-    for (let i = 0; i < 6; i += 1) {
-      const a = (i / 6) * Math.PI * 2 + Math.random() * 0.5;
-      const r = 3.5 + Math.random() * 1.5;
-      this.spawn(
-        new THREE.Vector3(pos.x + Math.cos(a) * r, 0.3, pos.z + Math.sin(a) * r),
-        0xb8a888,
-        new THREE.Vector3(Math.cos(a) * 2.5, 0.6 + Math.random() * 0.5, Math.sin(a) * 2.5),
-        0.7 + Math.random() * 0.3,
-        1.2 + Math.random() * 0.6,
-      );
+  skid(x, z, heading) {
+    const mat = new THREE.MeshBasicMaterial({ color: 0x111111, transparent: true, opacity: 0.55 });
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(0.35, 1.4), mat);
+    m.rotation.x = -Math.PI / 2;
+    m.rotation.z = -heading;
+    m.position.set(x, 0.03, z);
+    this.scene.dynamic.add(m);
+    this.skids.push({ mesh: m, life: 6 });
+    if (this.skids.length > 120) {
+      const old = this.skids.shift();
+      this.scene.dynamic.remove(old.mesh);
     }
   }
-
-  update(dt) {
-    for (let i = this.parts.length - 1; i >= 0; i -= 1) {
-      const p = this.parts[i];
+  screenFlash(color, opacity) {
+    this.flashMat.color.setHex(color);
+    this.flashMat.opacity = opacity;
+    this.flash.visible = true;
+    this.flashOnCamera = true;
+  }
+  update(dt, camera) {
+    // Particles.
+    for (let i = this.particles.length - 1; i >= 0; i--) {
+      const p = this.particles[i];
       p.life -= dt;
       if (p.life <= 0) {
-        this.scene.remove(p.mesh);
-        this.parts.splice(i, 1);
+        this.scene.dynamic.remove(p.mesh);
+        this.particles.splice(i, 1);
         continue;
       }
+      p.vel.y += p.gravity * dt;
       p.mesh.position.addScaledVector(p.vel, dt);
-      p.vel.y -= 2.4 * dt;
-      p.vel.multiplyScalar(1 - 1.6 * dt);
-      // Shared material, so fade by shrinking instead of by opacity.
-      const k = p.life / p.maxLife;
-      p.mesh.scale.setScalar(Math.max(0.05, k) * 1.2);
-      if (p.mesh.position.y < 0.12) p.mesh.position.y = 0.12;
+      p.mesh.material.opacity = p.life / p.maxLife;
     }
+    // Skid fade.
+    for (let i = this.skids.length - 1; i >= 0; i--) {
+      const s = this.skids[i];
+      s.life -= dt;
+      if (s.life <= 0) {
+        this.scene.dynamic.remove(s.mesh);
+        this.skids.splice(i, 1);
+      } else if (s.life < 2) {
+        s.mesh.material.opacity = 0.55 * (s.life / 2);
+      }
+    }
+    // Screen flash decay.
+    if (this.flash.visible) {
+      this.flashMat.opacity -= dt * 2.2;
+      if (this.flashMat.opacity <= 0) this.flash.visible = false;
+    }
+    if (this.flash.visible && camera) {
+      // Keep the flash plane glued in front of the camera.
+      const dir = new THREE.Vector3();
+      camera.getWorldDirection(dir);
+      this.flash.position.copy(camera.position).addScaledVector(dir, 0.6);
+      this.flash.lookAt(camera.position);
+      if (!this.flash.parent) camera.add(this.flash);
+    }
+    // Shake decay.
+    this.shake = Math.max(0, this.shake - dt * 1.4);
   }
-
-  clear() {
-    for (const p of this.parts) this.scene.remove(p.mesh);
-    this.parts = [];
+  shakeOffset() {
+    if (this.shake <= 0) return { x: 0, y: 0 };
+    const s = this.shake * 0.25;
+    return { x: (Math.random() - 0.5) * s, y: (Math.random() - 0.5) * s };
   }
 }

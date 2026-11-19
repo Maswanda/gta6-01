@@ -1,18 +1,1 @@
-[
-  {
-    "name": "1-showcase.jpg",
-    "query": "?shot=showcase&seed=11"
-  },
-  {
-    "name": "2-heli.jpg",
-    "query": "?shot=heli&seed=11"
-  },
-  {
-    "name": "3-combat.jpg",
-    "query": "?shot=combat&seed=11"
-  },
-  {
-    "name": "4-garage.jpg",
-    "query": "?shot=garage&seed=11"
-  }
-]
+{"shots":[{"caption":"Golden hour at the marina — the city, the bay, the minimap and the radio.","name":"1-showcase","query":"?shot=showcase&seed=11"},{"caption":"Four-star chase — the PD air unit overhead, spotlight on, pursuit car alongside.","name":"2-heli","query":"?shot=heli&seed=11"},{"caption":"Dockside shootout — shotgun out, crew in front, wanted stars up.","name":"3-combat","query":"?shot=combat&seed=11"},{"caption":"Rico's Garage — buy, sell and select rides, three cars on the forecourt.","name":"4-garage","query":"?shot=garage&seed=11"}]}

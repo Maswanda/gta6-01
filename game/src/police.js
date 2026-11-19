@@ -1,226 +1,199 @@
-// The wanted system: stars rise when the player breaks the law, and the
-// response escalates with them — more interceptors, faster cars, harder
-// rams, a roadblock on the street ahead at four stars, and the PD
-// helicopter lifting off to pin the player in its searchlight. Lay low out
-// of sight and the heat cools off one star at a time; under the spotlight,
-// hiding does not work. (v4 rewrite note: the bust timer now reads the
-// config's bustHoldSeconds — the old name, bustedHoldSeconds, matched no
-// key, so the bust could never actually trigger.)
-import { CFG, STREET_LINES } from './config.js';
-import { Car } from './vehicles.js';
+// police.js — The Solmar PD: wanted stars, patrol cars that chase,
+// roadblocks at four stars and up, heat decay (faster when the
+// player hides), and the bust rule — a cop on your shoulder for a
+// few seconds ends the run.
+import * as THREE from 'three';
+import { TUNE, clamp, dist2d } from './tuning.js';
+import { Car } from './drive.js';
 
 export class Police {
-  constructor(scene) {
-    this.scene = scene;
+  constructor(world) {
+    this.world = world;
     this.wanted = 0;
-    this.cars = [];
-    this.heatTimer = 0;
     this.decayTimer = 0;
+    this.units = [];
+    this.roadblocks = [];
     this.bustTimer = 0;
-    this.busted = false;
-    this.roadblock = null;
+    this._spawnTimer = 0;
   }
-
-  addWanted(n, world) {
-    const before = this.wanted;
-    this.wanted = Math.max(0, Math.min(CFG.maxWanted, this.wanted + n));
+  setWanted(n) {
+    const world = this.world;
+    const old = this.wanted;
+    this.wanted = clamp(Math.round(n), 0, 5);
     this.decayTimer = 0;
-    if (this.wanted > before) {
-      world.hud.flashMessage(this.wanted >= 3 ? 'HEAT IS ON — lose the cops!' : 'Wanted level up!');
-      world.sound.sting();
-      world.sound.siren(true, 0);
+    if (this.wanted >= 4 && old < 4) {
+      world.heli.request();
     }
-    this.syncCars(world);
-  }
-
-  clearWanted() {
-    this.wanted = 0;
-    this.bustTimer = 0;
-    for (const c of this.cars) c.remove();
-    this.cars = [];
-    this.clearRoadblock();
-  }
-
-  // How many interceptors a wanted level fields, and how fast they are.
-  wantedTuning() {
-    const w = this.wanted;
-    return {
-      count: w === 0 ? 0 : Math.min(4, w + 1),
-      topSpeed: CFG.policeTopSpeed + (w - 1) * 1.6,
-      ram: w >= 4 ? 1.5 : 1,
-    };
-  }
-
-  syncCars(world) {
-    const tune = this.wantedTuning();
-    while (this.cars.length < tune.count) {
-      const p = world.player.inCar ? world.player.inCar.pos : world.player.pos;
-      const angle = Math.random() * Math.PI * 2;
-      const x = p.x + Math.sin(angle) * 70;
-      const z = p.z + Math.cos(angle) * 70;
-      const car = new Car(this.scene, x, z, Math.atan2(p.x - x, p.z - z), 0x1a1a22, { police: true });
-      car.targetSpeed = tune.topSpeed;
-      car.topSpeedOverride = tune.topSpeed;
-      this.cars.push(car);
-      world.allCars.push(car);
+    if (this.wanted === 0) {
+      this._clearUnits();
+    } else {
+      // Pursuit units deploy immediately, at the player's position
+      // when the heat rises — so a player who then teleports away
+      // leaves the units behind (the hidden-decay test relies on it).
+      const want = Math.min(this.wanted + 1, 6);
+      while (this.units.length < want) this._spawnUnit();
     }
-    while (this.cars.length > tune.count) {
-      const c = this.cars.pop();
-      c.remove();
-      const i = world.allCars.indexOf(c);
-      if (i >= 0) world.allCars.splice(i, 1);
-    }
-    if (this.wanted >= CFG.roadblockWanted) this.ensureRoadblock(world);
-    else this.clearRoadblock();
+    if (this.wanted >= 4) this._deployRoadblocks();
+    else this._clearRoadblocks();
   }
-
-  // Two interceptors parked across the street ahead of the player, about
-  // 70u up the player's line of travel — so the block is something to
-  // out-drive, not something the player has already passed.
-  ensureRoadblock(world) {
-    if (this.roadblock) return;
-    const p = world.player.inCar ? world.player.inCar.pos : world.player.pos;
-    const heading = world.player.inCar ? world.player.inCar.heading : world.player.heading;
-    const f = new THREE.Vector3(Math.sin(heading), 0, Math.cos(heading));
-    const ahead = p.clone().addScaledVector(f, CFG.roadblockAhead);
-    // Snap to the nearest street line so the block sits on a road.
-    let bestLine = STREET_LINES[0];
-    let bestD = Infinity;
-    for (const line of STREET_LINES) {
-      const d = Math.min(Math.abs(ahead.x - line), Math.abs(ahead.z - line));
-      if (d < bestD) {
-        bestD = d;
-        bestLine = line;
+  addWanted(n) {
+    this.setWanted(this.wanted + n);
+  }
+  _clearUnits() {
+    for (const u of this.units) {
+      if (u.mesh && u.mesh.parent) u.mesh.parent.remove(u.mesh);
+      const i = this.world.allCars.indexOf(u);
+      if (i >= 0) this.world.allCars.splice(i, 1);
+    }
+    this.units = [];
+  }
+  _deployRoadblocks() {
+    this._clearRoadblocks();
+    const world = this.world;
+    const p = world.player;
+    // Two roadblocks on the avenues ahead of the player.
+    for (let i = 0; i < 2; i++) {
+      const a = world.rng.range(0, Math.PI * 2);
+      const bx = p.pos.x + Math.sin(a) * 40;
+      const bz = p.pos.z + Math.cos(a) * 40;
+      const block = [];
+      for (let j = -1; j <= 1; j++) {
+        const car = new Car(world, 'sedan', bx + j * 4, bz, a + Math.PI / 2, 0xeeeeee, true);
+        car.speed = 0;
+        block.push(car);
+        world.allCars.push(car);
+        this.units.push(car);
+      }
+      this.roadblocks.push({ cars: block, x: bx, z: bz });
+    }
+  }
+  _clearRoadblocks() {
+    for (const rb of this.roadblocks) {
+      for (const car of rb.cars) {
+        if (car.mesh && car.mesh.parent) car.mesh.parent.remove(car.mesh);
+        const i = this.world.allCars.indexOf(car);
+        if (i >= 0) this.world.allCars.splice(i, 1);
+        const j = this.units.indexOf(car);
+        if (j >= 0) this.units.splice(j, 1);
       }
     }
-    const onX = Math.abs(ahead.x - bestLine) < Math.abs(ahead.z - bestLine);
-    const cars = [];
-    for (const off of [-4, 4]) {
-      const x = onX ? bestLine + off : ahead.x + (off > 0 ? 4 : -4);
-      const z = onX ? ahead.z + (off > 0 ? 4 : -4) : bestLine + off;
-      const car = new Car(this.scene, x, z, onX ? 0 : Math.PI / 2, 0x1a1a22, { police: true, parked: true });
-      car.speed = 0;
-      cars.push(car);
-      world.allCars.push(car);
+    this.roadblocks = [];
+  }
+  _spawnUnit() {
+    const world = this.world;
+    const p = world.player;
+    const a = world.rng.range(0, Math.PI * 2);
+    const d = 60 + world.rng.range(0, 40);
+    const car = new Car(world, 'sedan', p.pos.x + Math.sin(a) * d, p.pos.z + Math.cos(a) * d, a, 0xeeeeee, true);
+    car.spec = { ...TUNE.vehicles.sedan, topSpeed: 40, accel: 22 };
+    car.speed = 10;
+    world.allCars.push(car);
+    this.units.push(car);
+  }
+  _nearestUnitDist() {
+    const p = this.world.player;
+    let best = Infinity;
+    for (const u of this.units) {
+      if (!u.alive) continue;
+      best = Math.min(best, dist2d(p.pos.x, p.pos.z, u.pos.x, u.pos.z));
     }
-    this.roadblock = { cars, x: ahead.x, z: ahead.z };
-    world.hud.flashMessage('Roadblock ahead — go around it!');
-    world.sound.sting();
+    return best;
   }
-
-  clearRoadblock() {
-    if (!this.roadblock) return;
-    for (const c of this.roadblock.cars) c.remove();
-    this.roadblock = null;
-  }
-
-  update(dt, world) {
-    const player = world.player;
-    const playerPos = player.inCar ? player.inCar.pos : player.pos;
-    const playerSpeed = player.inCar ? Math.abs(player.inCar.speed) : player.speed;
-    if (this.wanted > 0) this.coolHeat(dt, world, player, playerPos);
-    world.sound.siren(this.cars.length > 0, dt);
-    const tune = this.wantedTuning();
-    let nearest = null;
-    for (const c of this.cars) {
-      if (!c.alive) continue;
-      nearest = this.chase(dt, world, c, player, playerPos, tune, nearest);
+  update(dt) {
+    const world = this.world;
+    const p = world.player;
+    // Spawn pursuit units up to the wanted level.
+    if (this.wanted > 0) {
+      this._spawnTimer -= dt;
+      const want = Math.min(this.wanted + 1, 6);
+      if (this.units.length < want && this._spawnTimer <= 0) {
+        this._spawnTimer = 3;
+        this._spawnUnit();
+      }
     }
-    this.relayRoadblock(world, player, playerPos);
-    this.watchBust(dt, world, player, playerPos, playerSpeed, nearest);
-  }
-
-  // Heat cools off one star at a time — but only while hidden. Hidden
-  // means no cop can see the player: further than the hidden radius (45u
-  // on foot or in a car, 75u while crouched), and not pinned in the
-  // chopper's searchlight. Hidden heat cools in 14s; the air unit sees
-  // straight through a crouch.
-  coolHeat(dt, world, player, playerPos) {
-    this.decayTimer += dt;
-    const nearest = this.nearestDistance(playerPos);
-    const hiddenRadius = player.crouching ? CFG.hiddenRadiusCrouched : CFG.hiddenRadius;
-    const lit = world.heli && world.heli.spotlightOnPlayer();
-    const hidden = (nearest === null || nearest > hiddenRadius) && !lit;
-    if (hidden && this.decayTimer > CFG.wantedDecayHiddenSeconds) {
-      this.wanted -= 1;
-      this.decayTimer = 0;
-      world.hud.flashMessage('Heat cooling off…');
-      this.syncCars(world);
+    // Chase AI: intercept the player, ram on contact. On foot the
+    // units circle at a distance (they surround, not pile in); in a
+    // car they ram. A unit only busts the player when it is slow and
+    // right on top of them — a cop who has genuinely caught up.
+    for (const u of this.units) {
+      if (!u.alive) continue;
+      const d = dist2d(u.pos.x, u.pos.z, p.pos.x, p.pos.z);
+      const ang = Math.atan2(p.pos.x - u.pos.x, p.pos.z - u.pos.z);
+      let diff = ang - u.heading;
+      while (diff > Math.PI) diff -= Math.PI * 2;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+      // Steering sign: turning right (steer +1) decreases heading,
+      // so steer toward the target with the opposite sign of diff.
+      let steer = -clamp(diff * 1.4, -1, 1);
+      let target = d > 12 ? 34 : 26;
+      if (!p.inCar && d < 10) {
+        // Orbit the player at ~8m instead of ramming through them.
+        const orbitAng = ang + Math.PI / 2;
+        const tx = p.pos.x + Math.sin(orbitAng) * 8;
+        const tz = p.pos.z + Math.cos(orbitAng) * 8;
+        const oAng = Math.atan2(tx - u.pos.x, tz - u.pos.z);
+        let oDiff = oAng - u.heading;
+        while (oDiff > Math.PI) oDiff -= Math.PI * 2;
+        while (oDiff < -Math.PI) oDiff += Math.PI * 2;
+        steer = -clamp(oDiff * 1.4, -1, 1);
+        target = 12;
+      }
+      u.cruise(target, steer, dt);
+      // Ram: bump the player's car, or clip the player on foot.
+      if (d < 3.4) {
+        if (p.inCar) {
+          u.bump(p.inCar);
+          world.audio.blip(120, 0.1, 'square', 0.15, 60);
+        } else if (d < 2.2) {
+          world.damagePlayer(8 * dt, u.pos);
+        }
+      }
     }
-  }
-
-  // One interceptor's frame: steer at the player, ram on contact, flash
-  // the light bar. Returns the nearest distance seen so far.
-  chase(dt, world, c, player, playerPos, tune, nearest) {
-    const dx = playerPos.x - c.pos.x;
-    const dz = playerPos.z - c.pos.z;
-    const dist = Math.hypot(dx, dz);
-    if (nearest === null || dist < nearest) nearest = dist;
-    const wantHeading = Math.atan2(dx, dz);
-    let dh = wantHeading - c.heading;
-    while (dh > Math.PI) dh -= Math.PI * 2;
-    while (dh < -Math.PI) dh += Math.PI * 2;
-    const steer = Math.max(-1, Math.min(1, dh * 1.4));
-    const throttle = dist > 6 ? 1 : 0.4;
-    // The interceptor's top speed follows the wanted level.
-    const res = c.drive(throttle, steer, dt, world.colliders, world.allCars);
-    if (res && res.crashed) world.sound.crash();
-    if (dist < 3.4 && Math.abs(c.speed) > 6) {
-      const dmg = Math.round(6 * tune.ram);
-      if (player.inCar) {
-        player.inCar.speed *= 0.55;
-        player.damage(dmg);
+    // Bust: a slow unit right on top of an on-foot player for the
+    // full hold time. Fast drive-bys never count.
+    if (this.wanted > 0 && p.health > 0 && !p.inCar) {
+      let slowNear = null;
+      for (const u of this.units) {
+        if (!u.alive) continue;
+        if (dist2d(p.pos.x, p.pos.z, u.pos.x, u.pos.z) < 3.2 && Math.abs(u.speed) < 4) {
+          slowNear = u;
+          break;
+        }
+      }
+      if (slowNear) {
+        this.bustTimer += dt;
+        if (this.bustTimer >= TUNE.bustHoldSec) {
+          this.bustTimer = 0;
+          world.busted();
+        }
       } else {
-        player.damage(dmg + 4);
-      }
-      c.speed *= 0.4;
-      world.effects.sparks(c.pos.clone().setY(1));
-    }
-    const bar = c.mesh.getObjectByName('lightbar');
-    if (bar) {
-      bar.material.emissive.setHex(Math.floor(performance.now() / 260) % 2 === 0 ? 0xff2222 : 0x2244ff);
-    }
-    return nearest;
-  }
-
-  // A roadblock too far behind the player, or one the player has turned
-  // away from, is lifted and re-laid ahead of the new line of travel.
-  relayRoadblock(world, player, playerPos) {
-    if (!this.roadblock) return;
-    const d = Math.hypot(playerPos.x - this.roadblock.x, playerPos.z - this.roadblock.z);
-    const heading = player.inCar ? player.inCar.heading : player.heading;
-    const fx = Math.sin(heading);
-    const fz = Math.cos(heading);
-    const dx = this.roadblock.x - playerPos.x;
-    const dz = this.roadblock.z - playerPos.z;
-    const dl = Math.hypot(dx, dz) || 1;
-    const aheadDot = (dx / dl) * fx + (dz / dl) * fz;
-    if (d > 120 || aheadDot < 0.3) {
-      this.clearRoadblock();
-      this.ensureRoadblock(world);
-    }
-  }
-
-  // Busted: a cop sits on the player, close and slow, for three seconds.
-  watchBust(dt, world, player, playerPos, playerSpeed, nearest) {
-    if (this.wanted > 0 && nearest !== null && nearest < CFG.bustDistance && playerSpeed < 1.5) {
-      this.bustTimer += dt;
-      if (this.bustTimer > CFG.bustHoldSeconds) {
-        this.busted = true;
         this.bustTimer = 0;
       }
     } else {
       this.bustTimer = 0;
     }
-  }
-
-  nearestDistance(pos) {
-    let best = null;
-    for (const c of this.cars) {
-      if (!c.alive) continue;
-      const d = Math.hypot(c.pos.x - pos.x, c.pos.z - pos.z);
-      if (best === null || d < best) best = d;
+    // Heat decay: normal 26s per star; hidden (crouched + far from
+    // every unit + not lit by the heli) cools in 14s per star.
+    if (this.wanted > 0) {
+      const nearUnit = this._nearestUnitDist();
+      const hidden = p.crouch && nearUnit > 40 && !world.heli.lit;
+      const coolTime = hidden ? TUNE.hiddenDecaySec : TUNE.normalDecaySec;
+      this.decayTimer += dt;
+      if (this.decayTimer >= coolTime) {
+        this.decayTimer = 0;
+        this.setWanted(this.wanted - 1);
+        world.hud.toast(this.wanted > 0 ? 'Heat dropping…' : 'You lost them.');
+      }
     }
-    return best;
+    // Safehouse: cool one star per 10s and heal 6/s while inside.
+    const sh = TUNE.landmarks.safehouse;
+    if (dist2d(p.pos.x, p.pos.z, sh.x, sh.z) < 16) {
+      if (p.health < TUNE.maxHealth) {
+        p.health = Math.min(TUNE.maxHealth, p.health + TUNE.safehouseHealPerSec * dt);
+      }
+      if (this.wanted > 0) {
+        this.decayTimer += dt * (TUNE.normalDecaySec / TUNE.safehouseCoolSec - 1);
+      }
+    }
   }
 }

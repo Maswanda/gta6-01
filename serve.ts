@@ -1,19 +1,19 @@
-// A tiny static server for game/ (Node 22, standard library only), so an
-// entry can be played locally without a build step: `node serve.ts` serves
-// game/ on http://localhost:8080, and `node serve.ts --port 9000` picks a
-// port. It sends the MIME types a browser game needs, answers HEAD, refuses
-// any path outside game/, and otherwise does nothing clever: this is a
-// development convenience, not a web server for the internet.
-import { createReadStream, statSync } from 'node:fs';
+// serve.ts — Solmar Bay: Heatwave v4, the local static server.
+//
+// Serves game/ over HTTP so the game can be played and playtested in
+// a browser. Usage:
+//   node serve.ts --port 8321
+// then open http://127.0.0.1:8321/ (or /?shot=showcase&seed=11 for a
+// staged screenshot scene). Node's standard library only; the game
+// itself makes no network requests of its own.
 import { createServer } from 'node:http';
-import { extname, join, normalize, resolve, sep } from 'node:path';
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { dirname } from 'node:path';
 
-const root = resolve(fileURLToPath(new URL('./game', import.meta.url)));
-const args = process.argv.slice(2);
-const portIndex = args.indexOf('--port');
-const requested = portIndex === -1 ? 8080 : Number(args[portIndex + 1]);
-const port = Number.isInteger(requested) && requested > 0 && requested < 65536 ? requested : 8080;
+const repoRoot = dirname(fileURLToPath(import.meta.url));
+const gameDir = join(repoRoot, 'game');
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -24,64 +24,37 @@ const MIME: Record<string, string> = {
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
-  '.gif': 'image/gif',
-  '.webp': 'image/webp',
   '.svg': 'image/svg+xml',
-  '.ico': 'image/x-icon',
-  '.woff2': 'font/woff2',
-  '.glb': 'model/gltf-binary',
-  '.gltf': 'model/gltf+json',
-  '.bin': 'application/octet-stream',
   '.wasm': 'application/wasm',
-  '.wav': 'audio/wav',
-  '.mp3': 'audio/mpeg',
-  '.ogg': 'audio/ogg',
-  '.txt': 'text/plain; charset=utf-8',
 };
 
-createServer((request, response) => {
-  // A static file server only answers GET and HEAD — anything else is a
-  // method it does not implement.
-  if (request.method !== 'GET' && request.method !== 'HEAD') {
-    response.writeHead(405, { allow: 'GET, HEAD' }).end('method not allowed');
-    return;
-  }
-  const url = new URL(request.url ?? '/', 'http://localhost');
-  let pathname: string;
+const args = process.argv.slice(2);
+const portFlag = args.indexOf('--port');
+const port = portFlag >= 0 ? Number(args[portFlag + 1]) : 8321;
+if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+  console.error('serve.ts: --port must be a port number');
+  process.exit(1);
+}
+
+const server = createServer((req, res) => {
   try {
-    pathname = decodeURIComponent(url.pathname);
-  } catch {
-    response.writeHead(400).end('bad request');
-    return;
+    const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+    let path = decodeURIComponent(url.pathname);
+    if (path === '/') path = '/index.html';
+    const file = join(gameDir, path);
+    if (!file.startsWith(gameDir) || !existsSync(file) || !statSync(file).isFile()) {
+      res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+      res.end('not found');
+      return;
+    }
+    res.writeHead(200, { 'content-type': MIME[extname(file).toLowerCase()] ?? 'application/octet-stream' });
+    res.end(readFileSync(file));
+  } catch (e) {
+    res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
+    res.end('server error');
   }
-  if (pathname.endsWith('/')) pathname += 'index.html';
-  const file = resolve(join(root, normalize(pathname)));
-  if (file !== root && !file.startsWith(root + sep)) {
-    response.writeHead(403).end('forbidden');
-    return;
-  }
-  let size: number;
-  try {
-    const stats = statSync(file);
-    if (!stats.isFile()) throw new Error('not a file');
-    size = stats.size;
-  } catch {
-    response.writeHead(404).end('not found');
-    return;
-  }
-  const headers = {
-    'content-type': MIME[extname(file).toLowerCase()] ?? 'application/octet-stream',
-    'content-length': size,
-    'cache-control': 'no-store',
-    server: 'solmar-bay-dev/4',
-  };
-  if (request.method === 'HEAD') {
-    response.writeHead(200, headers).end();
-    return;
-  }
-  response.writeHead(200, headers);
-  createReadStream(file).pipe(response);
-}).listen(port, '127.0.0.1', () => {
-  console.log(`Solmar Bay v4 — game/ is on http://localhost:${port}`);
-  console.log('Open it in a desktop browser. Keyboard + mouse, no network needed.');
+});
+
+server.listen(port, '127.0.0.1', () => {
+  console.log(`Solmar Bay serving game/ at http://127.0.0.1:${port}/`);
 });

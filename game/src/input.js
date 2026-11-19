@@ -1,104 +1,63 @@
-// Keyboard + mouse input. Held keys live in one set, edge-triggered
-// presses in another — consume() reports a key once, so E, R and Escape
-// each fire a single action per press. M opens the mission tracker, 1/2/3
-// pick a weapon, Q cycles weapons, H honks, T works the side activities,
-// C crouches, and pressKey/releaseKey let the automated play-test hold a
-// key down (a drift needs W + D together for more than a frame).
-
-const SCROLL_KEYS = ['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
-
+// input.js — Keyboard and mouse state for Solmar Bay.
+// Keys are tracked by event.code so WASD, arrows, E/F/G/R/T and the
+// number keys all work the same in a real browser and headless.
+// pressKey / releaseKey let the test harness (and the ?shot= staging)
+// drive the game programmatically.
 export class Input {
   constructor() {
-    this.down = new Set();
-    this.pressed = new Set();
-    this.mouseDX = 0;
-    this.mouseDY = 0;
-    this.wheel = 0;
-    this.dragging = false;
-    this.anyKey = false;
-  }
-
-  attach(canvas) {
-    window.addEventListener('keydown', (e) => {
+    this.keys = new Set();
+    this.justPressed = new Set();
+    this.mouse = { x: 0, y: 0, down: false };
+    this._onKeyDown = (e) => {
       if (e.repeat) return;
-      this.down.add(e.code);
-      this.pressed.add(e.code);
-      this.anyKey = true;
-      if (SCROLL_KEYS.includes(e.code)) e.preventDefault();
-    });
-    window.addEventListener('keyup', (e) => this.down.delete(e.code));
-    window.addEventListener('blur', () => {
-      this.down.clear();
-      this.dragging = false;
-    });
-    canvas.addEventListener('pointerdown', (e) => {
-      this.dragging = true;
-      canvas.setPointerCapture(e.pointerId);
-      // Mouse buttons count as keys, so Mouse0 punches and Mouse2 shoots.
-      const code = e.button === 2 ? 'Mouse2' : 'Mouse0';
-      this.down.add(code);
-      this.pressed.add(code);
-    });
-    canvas.addEventListener('pointerup', (e) => {
-      this.dragging = false;
-      this.down.delete(e.button === 2 ? 'Mouse2' : 'Mouse0');
-    });
-    canvas.addEventListener('pointermove', (e) => {
-      if (!this.dragging) return;
-      this.mouseDX += e.movementX || 0;
-      this.mouseDY += e.movementY || 0;
-    });
-    canvas.addEventListener('wheel', (e) => {
-      this.wheel += e.deltaY;
-      e.preventDefault();
-    }, { passive: false });
-    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+      this.keys.add(e.code);
+      this.justPressed.add(e.code);
+    };
+    this._onKeyUp = (e) => {
+      this.keys.delete(e.code);
+    };
+    this._onBlur = () => {
+      this.keys.clear();
+    };
+    this._onMouseMove = (e) => {
+      this.mouse.x = e.clientX;
+      this.mouse.y = e.clientY;
+    };
+    this._onMouseDown = () => {
+      this.mouse.down = true;
+    };
+    this._onMouseUp = () => {
+      this.mouse.down = false;
+    };
+    window.addEventListener('keydown', this._onKeyDown);
+    window.addEventListener('keyup', this._onKeyUp);
+    window.addEventListener('blur', this._onBlur);
+    window.addEventListener('mousemove', this._onMouseMove);
+    window.addEventListener('mousedown', this._onMouseDown);
+    window.addEventListener('mouseup', this._onMouseUp);
   }
-
-  held(code) {
-    return this.down.has(code);
+  down(code) {
+    return this.keys.has(code);
   }
-
-  // Hold or release a key from code — the play-test's drift needs this.
+  pressed(code) {
+    return this.justPressed.has(code);
+  }
   pressKey(code) {
-    this.down.add(code);
-    this.anyKey = true;
+    this.keys.add(code);
+    this.justPressed.add(code);
   }
-
   releaseKey(code) {
-    this.down.delete(code);
+    this.keys.delete(code);
   }
-
-  // True once, for the frame the key went down; clears after being read.
-  consume(code) {
-    if (!this.pressed.has(code)) return false;
-    this.pressed.delete(code);
-    return true;
-  }
-
-  // WASD / arrows as a -1..1 pair.
-  moveAxes() {
-    let x = 0;
-    let y = 0;
-    if (this.held('KeyA') || this.held('ArrowLeft')) x -= 1;
-    if (this.held('KeyD') || this.held('ArrowRight')) x += 1;
-    if (this.held('KeyW') || this.held('ArrowUp')) y += 1;
-    if (this.held('KeyS') || this.held('ArrowDown')) y -= 1;
-    return { x, y };
-  }
-
-  // The weapon key the player just pressed, if any.
-  weaponKey() {
-    if (this.consume('Digit1')) return 'pistol';
-    if (this.consume('Digit2')) return 'shotgun';
-    if (this.consume('Digit3')) return 'smg';
-    return null;
-  }
-
   endFrame() {
-    this.pressed.clear();
-    this.mouseDX = 0;
-    this.mouseDY = 0;
-    this.wheel = 0;
+    this.justPressed.clear();
+  }
+  destroy() {
+    window.removeEventListener('keydown', this._onKeyDown);
+    window.removeEventListener('keyup', this._onKeyUp);
+    window.removeEventListener('blur', this._onBlur);
+    window.removeEventListener('mousemove', this._onMouseMove);
+    window.removeEventListener('mousedown', this._onMouseDown);
+    window.removeEventListener('mouseup', this._onMouseUp);
   }
 }
