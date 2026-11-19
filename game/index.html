@@ -1,53 +1,30 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Solmar Bay: Heatwave — GTA 6</title>
-<link rel="stylesheet" href="./index.css">
+<title>Solmar Bay: Heatwave — Make GTA 6</title>
+<link rel="stylesheet" href="index.css">
 <script type="importmap">
 { "imports": { "three": "./vendor/three/three.module.min.js" } }
 </script>
 </head>
 <body>
-<canvas id="game" aria-label="Solmar Bay Heatwave: an open-world crime game"></canvas>
-<div id="hud">
-  <canvas id="hud-minimap" width="170" height="170" aria-label="Minimap"></canvas>
-  <div id="hud-top">
-    <div id="hud-stars" aria-label="Wanted level">☆☆☆☆☆</div>
-    <div id="hud-cash">$0</div>
-    <div id="hud-clock">07:00</div>
-  </div>
-  <div id="hud-bars">
-    <div class="bar"><div id="hud-hp">HP 100</div></div>
-    <div class="bar"><div id="hud-armor">ARMOR 0</div></div>
-  </div>
-  <div id="hud-info">
-    <div id="hud-district">Marina</div>
-    <div id="hud-radio">♪ SOLMAR FM</div>
-  </div>
-  <div id="hud-mission">MISSION 1/12 — Meet Mara</div>
-  <div id="hud-objective">◆ Go to the Marina Pier</div>
-  <div id="hud-feed"></div>
-  <div id="hud-keys">WASD drive / walk · Space drift · F enter car · E rob ATM · R radio · 1/2/3 weapons · T taxi · V vigilante · Y trial · P pause</div>
-</div>
-<div id="garage-panel" style="display:none"></div>
-<div id="title-screen">
-  <div class="title-card">
+<canvas id="game" width="1280" height="800"></canvas>
+<div id="hud"></div>
+<div id="menu">
+  <div class="menu-card">
     <h1>SOLMAR BAY</h1>
-    <h2>HEATWAVE</h2>
-    <p>12 story missions. Helicopters. Radio. Rico's Garage. One city, yours to take.</p>
-    <p class="press">Press SPACE or click to start</p>
-    <p class="sub">WASD drive · F enter car · E rob ATM · R radio · 1/2/3 weapons</p>
+    <p class="menu-sub">HEATWAVE &mdash; an open-world crime story</p>
+    <p class="menu-text">Twelve missions across four districts. Steal cars, dodge the heat,
+    rob ATMs, tune the radio, buy rides at the garage &mdash; and stay alive
+    when the helicopter comes for you.</p>
+    <button id="menu-start">START THE STORY</button>
+    <p class="menu-keys">WASD drive &amp; walk &middot; Space drift &middot; F enter car / punch &middot;
+    E talk &amp; rob &middot; G fire &middot; R reload / radio &middot; 1/2/3 weapons &middot;
+    T taxi &middot; Y race &middot; P pause</p>
   </div>
 </div>
-<div id="pause-screen" style="display:none">
-  <div class="title-card">
-    <h2>PAUSED</h2>
-    <p class="press">Press P to resume</p>
-  </div>
-</div>
-<p id="status" role="status" aria-live="polite"></p>
-<script type="module" src="./src/main.js"></script>
+<script type="module" src="src/main.js"></script>
 </body>
 </html>

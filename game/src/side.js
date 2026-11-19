@@ -1,85 +1,105 @@
-// Side activities: taxi fares, vigilante (clear a wave), and time trials.
-// Each pays cash and is tracked in the save. Simple, real, and autopilot-friendly.
-import { randomRoadPoint } from './city.js';
-import { spawnEnemies } from './combat.js';
-import { sfx } from './audio.js';
+// side.js — side activities: taxi fares (T), time-trial race (Y), and
+// collectibles scattered around the city. Each pays cash; results persist
+// in the save.
+import { T, dist } from './tuning.js';
 
-export function createSide() {
-  return {
-    taxi: { active: false, fare: 0, tx: 0, tz: 0, timer: 0 },
-    vigilante: { active: false, left: 0 },
-    trial: { active: false, tx: 0, tz: 0, timer: 0, best: null },
-    results: { taxiDone: 0, vigilanteDone: 0, trialsDone: 0 },
-  };
-}
-
-export function startTaxi(world) {
-  const s = world.side.taxi;
-  const pt = randomRoadPoint(world.rng);
-  s.active = true;
-  s.tx = pt.x; s.tz = pt.z;
-  s.fare = 250;
-  s.timer = 75;
-  world.feed.push('Taxi fare: take the passenger to the marker — $250.');
-}
-
-export function startVigilante(world) {
-  const s = world.side.vigilante;
-  s.active = true;
-  s.left = 4;
-  spawnEnemies(world, 'gang', 4, world.player.x + 35, world.player.z, world.rng);
-  world.feed.push('Vigilante: clear 4 Bay Kings — $400.');
-}
-
-export function startTrial(world) {
-  const s = world.side.trial;
-  const pt = randomRoadPoint(world.rng);
-  s.active = true;
-  s.tx = pt.x; s.tz = pt.z;
-  s.timer = 60;
-  world.feed.push('Time trial: reach the marker in 60 seconds — $350.');
-}
-
-export function stepSide(world, dt) {
-  const p = world.player;
-  const s = world.side;
-  if (s.taxi.active) {
-    s.taxi.timer -= dt;
-    const d = Math.hypot(p.x - s.taxi.tx, p.z - s.taxi.tz);
-    if (d < 12) {
-      p.cash += s.taxi.fare;
-      s.results.taxiDone += 1;
-      s.taxi.active = false;
-      sfx.cash();
-      world.feed.push(`Taxi fare complete — +$${s.taxi.fare}.`);
-    } else if (s.taxi.timer <= 0) {
-      s.taxi.active = false;
-      world.feed.push('Taxi fare expired.');
+export class Side {
+  constructor(city) {
+    this.city = city;
+    this.taxi = { state: 'idle', passenger: null, dest: null, earned: 0 };
+    this.race = { state: 'idle', point: 0, earned: 0 };
+    this.collectibles = { found: 0, total: 8, ids: [] };
+    this._points = [[104, -104], [-104, -104], [-104, 104], [104, 104]];
+    // 8 collectibles: hidden packages at fixed spots.
+    const spots = [
+      [-260, 260], [260, 260], [-260, -260], [260, -260],
+      [0, 260], [-260, 0], [260, 0], [0, -260],
+    ];
+    this._collectibleSpots = spots.map(([x, z], i) => ({ id: 'pkg' + (i + 1), x, z, found: false }));
+  }
+  get state() {
+    return {
+      taxi: { state: this.taxi.state, earned: this.taxi.earned },
+      race: { state: this.race.state, earned: this.race.earned },
+      collectibles: { found: this.collectibles.found, total: this.collectibles.total },
+    };
+  }
+  startTaxi(world) {
+    if (this.taxi.state === 'pickup' || this.taxi.state === 'dropoff') return false;
+    const p = world.player.inCar ? world.player.inCar.pos : world.player.pos;
+    // Passenger a short drive away, destination across town.
+    const a = Math.random() * Math.PI * 2;
+    const px = Math.max(-280, Math.min(280, p.x + Math.sin(a) * 90));
+    const pz = Math.max(-280, Math.min(280, p.z + Math.cos(a) * 90));
+    const dx = -px, dz = -pz;
+    this.taxi = { state: 'pickup', passenger: { x: px, z: pz }, dest: { x: dx, z: dz }, earned: this.taxi.earned };
+    return true;
+  }
+  // T near the passenger picks them up; T near the destination drops them off.
+  taxiInteract(world) {
+    const p = world.player.inCar ? world.player.inCar.pos : world.player.pos;
+    if (this.taxi.state === 'pickup') {
+      if (dist(p.x, p.z, this.taxi.passenger.x, this.taxi.passenger.z) < 12) {
+        this.taxi.state = 'dropoff';
+        return 'picked';
+      }
+    } else if (this.taxi.state === 'dropoff') {
+      if (dist(p.x, p.z, this.taxi.dest.x, this.taxi.dest.z) < 14) {
+        this.taxi.state = 'idle';
+        this.taxi.earned += T.taxiFare;
+        world.player.cash += T.taxiFare;
+        return 'done';
+      }
+    }
+    return null;
+  }
+  startRace() {
+    if (this.race.state === 'running') return false;
+    this.race = { state: 'running', point: 0, earned: this.race.earned };
+    return true;
+  }
+  update(dt, world) {
+    const p = world.player.inCar ? world.player.inCar.pos : world.player.pos;
+    if (this.race.state === 'running') {
+      const pt = this._points[this.race.point];
+      if (pt && dist(p.x, p.z, pt[0], pt[1]) <= T.gotoRadius) {
+        this.race.point++;
+        if (this.race.point >= this._points.length) {
+          this.race.state = 'idle';
+          this.race.earned += T.racePrize;
+          world.player.cash += T.racePrize;
+        } else if (world.audio) world.audio.pickup();
+      }
+    }
+    // Collectibles: walk or drive over them.
+    for (const c of this._collectibleSpots) {
+      if (!c.found && dist(p.x, p.z, c.x, c.z) < 6) {
+        c.found = true;
+        this.collectibles.found++;
+        world.player.cash += T.collectibleReward;
+        if (world.audio) world.audio.pickup();
+      }
     }
   }
-  if (s.vigilante.active) {
-    const left = world.enemies.length;
-    if (left === 0) {
-      p.cash += 400;
-      s.results.vigilanteDone += 1;
-      s.vigilante.active = false;
-      sfx.cash();
-      world.feed.push('Vigilante complete — +$400.');
-    }
+  collectibleIds() { return this._collectibleSpots.filter((c) => !c.found).map((c) => c.id); }
+  collectiblePos(id) {
+    const c = this._collectibleSpots.find((s) => s.id === id);
+    return c ? { x: c.x, z: c.z } : null;
   }
-  if (s.trial.active) {
-    s.trial.timer -= dt;
-    const d = Math.hypot(p.x - s.trial.tx, p.z - s.trial.tz);
-    if (d < 12) {
-      p.cash += 350;
-      s.results.trialsDone += 1;
-      if (s.trial.best === null || s.trial.timer > s.trial.best) s.trial.best = s.trial.timer;
-      s.trial.active = false;
-      sfx.cash();
-      world.feed.push('Time trial complete — +$350.');
-    } else if (s.trial.timer <= 0) {
-      s.trial.active = false;
-      world.feed.push('Time trial expired.');
+  serialize() {
+    return {
+      taxiEarned: this.taxi.earned,
+      raceEarned: this.race.earned,
+      collectibles: this._collectibleSpots.filter((c) => c.found).map((c) => c.id),
+    };
+  }
+  deserialize(d) {
+    if (!d) return;
+    if (typeof d.taxiEarned === 'number') this.taxi.earned = d.taxiEarned;
+    if (typeof d.raceEarned === 'number') this.race.earned = d.raceEarned;
+    if (Array.isArray(d.collectibles)) {
+      for (const c of this._collectibleSpots) c.found = d.collectibles.includes(c.id);
+      this.collectibles.found = this._collectibleSpots.filter((c) => c.found).length;
     }
   }
 }

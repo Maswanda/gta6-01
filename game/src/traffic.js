@@ -1,66 +1,95 @@
-// Traffic: 12 ambient cars cruising the road grid + 28 wandering peds.
-// They keep the city alive; they never block a mission (they yield by slowing).
-import { createCar, stepCar } from './drive.js';
-import { randomRoadPoint, nearestRoadPoint, collideCircle } from './city.js';
+// traffic.js — ambient traffic cars and wandering pedestrians. They drive
+// and walk the road grid on their own; the player can steal a traffic car.
+import { T, clamp } from './tuning.js';
+import { Car } from './drive.js';
+import { makeRng } from './rng.js';
 
-export function spawnTraffic(world) {
-  for (let i = 0; i < 12; i += 1) {
-    const pt = randomRoadPoint(world.rng);
-    const kind = world.rng.pick(['sedan', 'sedan', 'taxi', 'truck', 'sport']);
-    const car = createCar(kind, pt.x, pt.z, world.rng.range(0, Math.PI * 2), 'traffic');
-    car.speed = world.rng.range(8, 16);
-    world.cars.push(car);
-  }
-  for (let i = 0; i < 28; i += 1) {
-    const pt = randomRoadPoint(world.rng);
-    world.peds.push({
-      id: i + 1, x: pt.x, z: pt.z,
-      heading: world.rng.range(0, Math.PI * 2),
-      speed: world.rng.range(1, 2.4),
-      color: [0xc04040, 0x4080c0, 0x40a060, 0xc0a040, 0x8040a0, 0x606060][i % 6],
-      wander: world.rng.range(2, 8),
-    });
-  }
-}
+const KINDS = ['sedan', 'sedan', 'muscle', 'van', 'taxi'];
 
-export function stepTraffic(world, dt) {
-  const p = world.player;
-  for (const car of world.cars) {
-    if (car.driver !== 'traffic') continue;
-    if (car.hp <= 0) continue;
-    // Cruise along the road: steer toward the nearest road line, slow near the player.
-    const dPlayer = Math.hypot(car.x - p.x, car.z - p.z);
-    const target = dPlayer < 14 ? 0 : 1;
-    const pt = nearestRoadPoint(car.x + Math.sin(car.heading) * 20, car.z + Math.cos(car.heading) * 20);
-    const wantHeading = Math.atan2(pt.x - car.x, pt.z - car.z);
-    let dh = wantHeading - car.heading;
-    while (dh > Math.PI) dh -= Math.PI * 2;
-    while (dh < -Math.PI) dh += Math.PI * 2;
-    const steer = Math.max(-1, Math.min(1, dh * 2));
-    stepCar(world, car, { steer, throttle: target, drift: false }, dt);
-    if (Math.random() < dt * 0.05) {
-      car.heading += (Math.random() - 0.5) * 0.6; // occasional lane change
+export class Traffic {
+  constructor(city, seed) {
+    this.city = city;
+    this.rng = makeRng(seed ^ 0x9e3779b9);
+    this.cars = [];
+    this.peds = [];
+    for (let i = 0; i < 12; i++) this.cars.push(this._spawnCar());
+    for (let i = 0; i < 28; i++) this.peds.push(this._spawnPed());
+  }
+  _roadCoord() {
+    const n = Math.floor(this.rng.range(-6, 7));
+    return n * T.roadStep;
+  }
+  _spawnCar() {
+    const car = new Car(this._roadCoord(), this._roadCoord(), this.rng.pick(KINDS));
+    car.heading = this.rng.pick([0, Math.PI / 2, Math.PI, -Math.PI / 2]);
+    car.speed = this.rng.range(6, 12);
+    car.driver = 'traffic';
+    return car;
+  }
+  _spawnPed() {
+    return {
+      x: this._roadCoord() + this.rng.range(-20, 20),
+      z: this._roadCoord() + this.rng.range(-20, 20),
+      heading: this.rng.range(0, Math.PI * 2),
+      speed: this.rng.range(1.2, 2.4),
+      retarget: this.rng.range(2, 8),
+      color: this.rng.pick([0xff6b6b, 0x6bff8f, 0x6bb8ff, 0xffe66b, 0xc96bff, 0xff9f43]),
+      mesh: null,
+    };
+  }
+  update(dt, playerPos) {
+    // Traffic cars: cruise the grid, turn at intersections, avoid the player.
+    for (const car of this.cars) {
+      if (!car.alive || car.parked) continue;
+      const onRoadX = Math.abs(((car.pos.x % T.roadStep) + T.roadStep) % T.roadStep) < 4
+        || Math.abs((((car.pos.x % T.roadStep) + T.roadStep) % T.roadStep) - T.roadStep) < 4;
+      const onRoadZ = Math.abs(((car.pos.z % T.roadStep) + T.roadStep) % T.roadStep) < 4
+        || Math.abs((((car.pos.z % T.roadStep) + T.roadStep) % T.roadStep) - T.roadStep) < 4;
+      if (onRoadX && onRoadZ && this.rng.chance(dt * 0.5)) {
+        car.heading += this.rng.pick([-Math.PI / 2, Math.PI / 2]);
+      }
+      // Gentle avoidance: slow down if the player is right ahead.
+      const dx = playerPos.x - car.pos.x, dz = playerPos.z - car.pos.z;
+      const ahead = Math.sin(car.heading) * dx + Math.cos(car.heading) * dz;
+      const distP = Math.hypot(dx, dz);
+      const throttle = (distP < 14 && ahead > 0) ? 0 : 0.5;
+      car.step(0, throttle, false, dt, this.city);
+      if (car.speed < 4) car.speed = 6;
+    }
+    // Peds: wander, retarget often, stay on the sidewalks (near roads).
+    for (const p of this.peds) {
+      p.retarget -= dt;
+      if (p.retarget <= 0) {
+        p.heading = this.rng.range(0, Math.PI * 2);
+        p.retarget = this.rng.range(3, 9);
+      }
+      p.x += Math.sin(p.heading) * p.speed * dt;
+      p.z += Math.cos(p.heading) * p.speed * dt;
+      p.x = clamp(p.x, -T.worldHalf, T.worldHalf);
+      p.z = clamp(p.z, -T.worldHalf, T.worldHalf);
+      // Step out of buildings.
+      const b = this.city.buildingAt(p.x, p.z);
+      if (b) { p.heading += Math.PI / 2; p.x -= Math.sin(p.heading) * 2; p.z -= Math.cos(p.heading) * 2; }
     }
   }
-  // Remove wrecked traffic cars, respawn fresh ones far away.
-  const before = world.cars.length;
-  world.cars = world.cars.filter((c) => c.driver !== 'traffic' || c.hp > 0);
-  if (world.cars.length < before) {
-    const pt = randomRoadPoint(world.rng);
-    const car = createCar('sedan', pt.x, pt.z, world.rng.range(0, Math.PI * 2), 'traffic');
-    car.speed = 10;
-    world.cars.push(car);
-  }
-  for (const ped of world.peds) {
-    ped.wander -= dt;
-    if (ped.wander <= 0) {
-      ped.wander = world.rng.range(2, 8);
-      ped.heading = world.rng.range(0, Math.PI * 2);
+  // Park three cars (sedan / muscle / sports) around a point for the
+  // garage shot. Parked cars never drive off; the caller adds them to the
+  // world's allCars so the renderer (and nearestCar) can see them.
+  parkCarsNear(x, z) {
+    const kinds = ['sedan', 'muscle', 'sports'];
+    const offs = [[-6, -6], [6, -6], [0, 7]];
+    const out = [];
+    for (let i = 0; i < 3; i++) {
+      const c = new Car(x + offs[i][0], z + offs[i][1], kinds[i]);
+      c.heading = 0;
+      c.speed = 0;
+      c.parked = true;
+      c.syncMesh(0);
+      this.cars.push(c);
+      out.push(c);
     }
-    const nx = ped.x + Math.sin(ped.heading) * ped.speed * dt;
-    const nz = ped.z + Math.cos(ped.heading) * ped.speed * dt;
-    const hit = collideCircle(world.city, nx, nz, 0.6);
-    ped.x = hit.x; ped.z = hit.z;
-    if (hit.hit) ped.heading += Math.PI / 2;
+    return out;
   }
+  // All cars in the world (traffic + player-owned + police are tracked by main).
+  get allCars() { return this.cars; }
 }

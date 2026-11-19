@@ -1,25 +1,18 @@
-// Particles + screen shake. Pure data on the world object; scene.js draws them.
-// Particles are cheap fading dots: muzzle sparks, explosion puffs, cash glints.
-export function spawnParticles(world, x, y, z, color, count, life = 0.6) {
-  for (let i = 0; i < count; i += 1) {
-    world.particles.push({
-      id: world.particleId++,
-      x: x + (Math.random() - 0.5) * 1.5,
-      y: y + (Math.random() - 0.5) * 1,
-      z: z + (Math.random() - 0.5) * 1.5,
-      life, color,
-    });
+// effects.js — cheap transient effects: muzzle flashes, explosions and
+// drift smoke. All 2D data; scene.js draws them as sprites/points.
+export class Effects {
+  constructor() {
+    this.items = []; // {kind, x, z, t, life}
   }
-}
-
-export function stepParticles(world, dt) {
-  for (const pt of world.particles) {
-    pt.life -= dt;
-    pt.y += dt * 1.5;
+  muzzle(x, z) { this.items.push({ kind: 'muzzle', x, z, t: 0, life: 0.12 }); }
+  explosion(x, z) { this.items.push({ kind: 'explosion', x, z, t: 0, life: 0.9 }); }
+  smoke(x, z) { this.items.push({ kind: 'smoke', x, z, t: 0, life: 0.7 }); }
+  update(dt) {
+    for (const it of this.items) it.t += dt;
+    this.items = this.items.filter((it) => it.t < it.life);
   }
-  world.particles = world.particles.filter((pt) => pt.life > 0);
-}
-
-export function shake(world, amount) {
-  world.shake = Math.max(world.shake || 0, amount);
+  // Snapshot for the renderer: [{kind, x, z, a}] with a = 0..1 alpha.
+  snapshot() {
+    return this.items.map((it) => ({ kind: it.kind, x: it.x, z: it.z, a: 1 - it.t / it.life }));
+  }
 }

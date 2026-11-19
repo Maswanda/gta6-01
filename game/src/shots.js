@@ -1,89 +1,69 @@
-// Screenshot scenes behind ?shot=showcase|heli|combat|garage.
-// Each stages a REAL game state (real rules, real HUD) from a fresh world, then the
-// main loop paints it and sets document.title = 'SHOT_READY' for the capture.
-// The four shots prove four different things: world, heli pursuit, combat, garage.
-import { createCar } from './drive.js';
-import { spawnEnemies } from './combat.js';
-import { startMission } from './missions.js';
-
-function frameCam(world, px, pz, dist, height, heading) {
-  const bx = px - Math.sin(heading) * dist;
-  const bz = pz - Math.cos(heading) * dist;
-  world.shotCam = { x: bx, y: height, z: bz, lx: px, ly: 2, lz: pz };
-}
-
-function putPlayerInCar(world, kind, x, z, heading) {
-  const car = createCar(kind, x, z, heading, 'player');
-  world.cars.push(car);
-  const p = world.player;
-  p.inCar = car.id;
-  p.x = x; p.z = z; p.heading = heading;
-  return car;
-}
+// shots.js — the ?shot= scenes for the 4 screenshots. Each one stages real
+// game state (a mission in progress, the helicopter overhead, combat, the
+// garage) and marks the document SHOT_READY once the frame has settled.
+// The playtest captures: 1-showcase (Marina day, mission 1, full HUD),
+// 2-heli (5-star heli pursuit at night), 3-combat (mission + shotgun),
+// 4-garage (Rico's Garage, 3 rides).
+import { LM } from './tuning.js';
 
 export function stageShot(world, name) {
-  const p = world.player;
-  // Fresh, deterministic state for every shot.
-  world.enemies = [];
-  world.bullets = [];
-  world.particles = [];
-  world.cars = world.cars.filter((c) => c.driver === 'traffic');
-  world.heli.active = false;
-  world.shotCam = null;
-
-  if (name === 'heli') {
-    // Night Vice Beach, 4 red wanted stars, helicopter spotlight overhead.
-    world.dayTime = 0.75 * 240;
-    p.wanted = 4; p.heat = 4;
-    p.cash = 12400;
-    putPlayerInCar(world, 'sport', 320, -320, Math.PI * 0.6);
-    world.heli.active = true;
-    world.heli.x = 320; world.heli.z = -340; world.heli.y = 55;
-    world.heli.heading = 0;
-    world.missions.index = 10;
-    world.missions.title = 'Air Support';
-    startMission(world, 10);
-    frameCam(world, 320, -320, 34, 20, Math.PI * 0.6);
-    return;
+  const w = world;
+  const p = w.player;
+  const set = (x, z, heading) => {
+    if (p.inCar) { p.exitCar(); }
+    p.pos.x = x; p.pos.z = z; p.heading = heading || 0;
+  };
+  if (name === 'showcase') {
+    w.missions.index = 0; w.missions.step = 0; w.missions.done = false;
+    w.missions._killSpawned = false; w.missions._heliSet = false;
+    w.city.setDayFrac(0.12);
+    w.police.setWanted(1);
+    set(LM.marina[0], LM.marina[1], 0.6);
+    // A few parked rides so the showcase reads as a living street.
+    for (const c of w.traffic.parkCarsNear(LM.marina[0], LM.marina[1])) w.allCars.push(c);
+    w.radio.setStation(0);
+    p.cash = 1250;
+  } else if (name === 'heli') {
+    w.missions.index = 10; w.missions.step = 0; w.missions.done = false;
+    w.city.setDayFrac(0.72);
+    w.police.setWanted(4);
+    set(30, 236, 2.6);
+    // Put the chopper in front of the player (orbit angle = player
+    // heading), lit, so the chase camera actually sees it + its cone.
+    w.heli.active = true;
+    w.heli.lit = true;
+    w.heli.orbitAngle = 2.6;
+    w.heli.pos.x = 30 + Math.sin(2.6) * 26; w.heli.pos.z = 236 + Math.cos(2.6) * 26; w.heli.pos.y = 16;
+    w.heli.lastKnown.x = 30; w.heli.lastKnown.z = 236;
+    p.cash = 3400;
+  } else if (name === 'combat') {
+    w.missions.index = 3; w.missions.step = 1; w.missions.done = false;
+    w.missions._killSpawned = true;
+    w.combat.clearEnemies();
+    w.combat.unlock('shotgun');
+    w.combat.switchWeapon('shotgun');
+    w.combat.spawnEnemies([
+      { x: -198, z: 58, kind: 'bayking' },
+      { x: -208, z: 62, kind: 'bayking' },
+      { x: -216, z: 52, kind: 'enforcer' },
+    ]);
+    w.city.setDayFrac(0.3);
+    w.police.setWanted(2);
+    set(-208, 40, 0.1);
+    p.cash = 2100;
+  } else if (name === 'garage') {
+    w.missions.index = 5; w.missions.step = 0; w.missions.done = false;
+    w.city.setDayFrac(0.2);
+    w.police.setWanted(0);
+    p.cash = 5000;
+    w.garage.owned = ['sedan', 'muscle', 'sports'];
+    w.garage.selected = 'sports';
+    set(LM.garage[0] - 6, LM.garage[1] + 8, 2.2);
+    // The three rides to pick from, parked at the garage for real.
+    for (const c of w.traffic.parkCarsNear(LM.garage[0], LM.garage[1])) w.allCars.push(c);
   }
-  if (name === 'combat') {
-    // Dusk Vice Beach, mission 3, shotgun out, Bay Kings in front of the player.
-    world.dayTime = 0.5 * 240;
-    p.wanted = 2; p.heat = 2;
-    p.cash = 3850;
-    p.weapon = 'shotgun';
-    putPlayerInCar(world, 'sedan', 280, -260, Math.PI * 0.25);
-    spawnEnemies(world, 'gang', 3, 300, -240, world.rng);
-    world.missions.index = 2;
-    world.missions.title = 'First Blood';
-    startMission(world, 2);
-    frameCam(world, 290, -250, 30, 16, Math.PI * 0.25);
-    return;
-  }
-  if (name === 'garage') {
-    // Daytime Marina, Rico's Garage, three rides to pick from.
-    world.dayTime = 0.28 * 240;
-    p.wanted = 0; p.heat = 0;
-    p.cash = 9200;
-    const g = world.city.landmarks.garage;
-    world.cars.push(createCar('sedan', g.x - 10, g.z + 8, 0, 'none'));
-    world.cars.push(createCar('sport', g.x + 2, g.z + 10, 0, 'none'));
-    world.cars.push(createCar('taxi', g.x + 14, g.z + 6, 0, 'none'));
-    p.x = g.x; p.z = g.z + 22; p.heading = Math.PI;
-    p.inCar = null;
-    world.missions.index = 5;
-    world.missions.title = "Rico's Ride";
-    startMission(world, 5);
-    frameCam(world, g.x + 2, g.z + 8, 36, 22, Math.PI);
-    return;
-  }
-  // showcase (default): daytime Marina, mission 1, full HUD, car by the pier.
-  world.dayTime = 0.12 * 240;
-  p.wanted = 0; p.heat = 0;
-  p.cash = 500;
-  putPlayerInCar(world, 'sedan', -300, -300, Math.PI * 0.75);
-  world.missions.index = 0;
-  world.missions.title = 'Meet Mara';
-  startMission(world, 0);
-  frameCam(world, -300, -300, 32, 18, Math.PI * 0.75);
+  // Let one frame render, then mark the shot ready.
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => { document.title = 'SHOT_READY'; });
+  });
 }

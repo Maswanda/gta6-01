@@ -1,77 +1,80 @@
-// RadioSystem: 3 procedural Web Audio stations, no samples, no network.
-// Each station is a step sequencer over a scale; the HUD shows the station name.
-// Key R (or radio.next()) switches. Safe when audio is suspended: it just stays silent.
-import { getAudio } from './audio.js';
-
+// radio.js — RadioSystem: 3 procedural Web Audio stations, no samples, no
+// network. The station name is in the HUD every frame; R cycles stations.
+// Stations: SOLMAR 88.5 (sunny pop), BAY 101 (bass-heavy night drive),
+// VICE FM 99.9 (talk + jingles). Each station is a tiny step sequencer.
 export const STATIONS = [
-  { name: 'SOLMAR FM', desc: 'synthwave', bpm: 112, wave: 'sawtooth', scale: [0, 3, 5, 7, 10], root: 110, bass: 55 },
-  { name: 'VICE 88', desc: 'funk', bpm: 96, wave: 'square', scale: [0, 3, 5, 6, 10], root: 98, bass: 49 },
-  { name: 'BAY TALK', desc: 'talk radio', bpm: 80, wave: 'triangle', scale: [0, 2, 4, 7, 9], root: 131, bass: 65 },
+  { name: 'SOLMAR 88.5', bpm: 112, root: 220, wave: 'triangle', mood: 'Sunny pop' },
+  { name: 'BAY 101', bpm: 92, root: 110, wave: 'sawtooth', mood: 'Night drive bass' },
+  { name: 'VICE FM 99.9', bpm: 128, root: 262, wave: 'square', mood: 'Talk + jingles' },
 ];
 
-export function createRadio() {
-  return {
-    index: 0, timer: null, step: 0, gainNode: null,
-    name() { return STATIONS[this.index].name; },
-    next() {
-      this.index = (this.index + 1) % STATIONS.length;
-      this.step = 0;
-      this.restart();
-      return this.name();
-    },
-    start() { this.restart(); },
-    stop() {
-      if (this.timer) { clearInterval(this.timer); this.timer = null; }
-    },
-    restart() {
-      this.stop();
-      const a = getAudio();
-      if (!a) return;
-      try {
-        if (!this.gainNode) {
-          this.gainNode = a.ctx.createGain();
-          this.gainNode.gain.value = 0.12;
-          this.gainNode.connect(a.master);
-        }
-        const st = STATIONS[this.index];
-        const stepMs = 60000 / st.bpm / 2;
-        this.timer = setInterval(() => this.playStep(a, st), stepMs);
-      } catch { /* radio is best-effort */ }
-    },
-    playStep(a, st) {
-      try {
-        if (a.ctx.state === 'suspended') return;
-        const t0 = a.ctx.currentTime;
-        const s = this.step;
-        this.step += 1;
-        // Bass on beats 0 and 2 of each bar.
-        if (s % 4 === 0 || s % 4 === 2) {
-          const o = a.ctx.createOscillator();
-          const g = a.ctx.createGain();
-          o.type = 'sine';
-          o.frequency.value = st.bass * (s % 8 === 4 ? 1.5 : 1);
-          g.gain.setValueAtTime(0.0001, t0);
-          g.gain.exponentialRampToValueAtTime(0.5, t0 + 0.02);
-          g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.32);
-          o.connect(g); g.connect(this.gainNode);
-          o.start(t0); o.stop(t0 + 0.36);
-        }
-        // Melody: pentatonic walk, deterministic-ish from step.
-        if (s % 2 === 0) {
-          const deg = [0, 2, 1, 4, 3, 2, 4, 1][Math.floor(s / 2) % 8];
-          const semi = st.scale[deg % st.scale.length] + 12 * Math.floor(deg / st.scale.length);
-          const freq = st.root * Math.pow(2, semi / 12) * 2;
-          const o = a.ctx.createOscillator();
-          const g = a.ctx.createGain();
-          o.type = st.wave;
-          o.frequency.value = freq;
-          g.gain.setValueAtTime(0.0001, t0);
-          g.gain.exponentialRampToValueAtTime(0.14, t0 + 0.02);
-          g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.22);
-          o.connect(g); g.connect(this.gainNode);
-          o.start(t0); o.stop(t0 + 0.26);
-        }
-      } catch { /* ignore audio errors */ }
-    },
-  };
+export class Radio {
+  constructor(audio) {
+    this.audio = audio;
+    this.on = true;
+    this.station = 0;
+    this._step = 0;
+    this._nextTime = 0;
+    this._timer = null;
+  }
+  get name() { return STATIONS[this.station].name; }
+  get state() { return { on: this.on, station: this.name }; }
+  setStation(i) {
+    this.station = ((i % STATIONS.length) + STATIONS.length) % STATIONS.length;
+    this._step = 0;
+    this._blip();
+    return this.name;
+  }
+  cycle() { return this.setStation(this.station + 1); }
+  toggle() { this.on = !this.on; return this.on; }
+  _blip() { try { this.audio.ensure(); this.audio.blip(1200); } catch {} }
+  // Called every frame: schedules the current station's loop a bar ahead.
+  update(dt) {
+    if (!this.on) return;
+    const st = STATIONS[this.station];
+    const audio = this.audio;
+    if (!audio.ctx) return;
+    try {
+      const now = audio.ctx.currentTime;
+      if (this._nextTime < now) this._nextTime = now + 0.05;
+      const stepDur = 60 / st.bpm / 2; // eighth notes
+      while (this._nextTime < now + 0.25) {
+        const s = this._step % 16;
+        const t = this._nextTime;
+        // Bass line: root on 0, 3, 6, 10, 12; fifth on 8.
+        const bassNotes = { 0: 1, 3: 1, 6: 1, 8: 1.5, 10: 1, 12: 1.5 };
+        if (bassNotes[s]) this._note(st.root * bassNotes[s], st.wave, stepDur * 1.8, 0.16, t);
+        // Sparkle: pentatonic plucks on the off-beats.
+        if (s % 4 === 2) this._note(st.root * 4 * [1, 1.2, 1.5, 1.8][(this._step >> 2) % 4], 'sine', stepDur, 0.07, t);
+        // Hat tick every eighth on BAY 101.
+        if (this.station === 1 && s % 2 === 1) this._hat(t);
+        this._step++;
+        this._nextTime += stepDur;
+      }
+    } catch { /* radio is cosmetic */ }
+  }
+  _note(freq, wave, dur, vol, t) {
+    const audio = this.audio;
+    if (!audio.ctx || !audio.master) return;
+    const o = audio.ctx.createOscillator();
+    const g = audio.ctx.createGain();
+    o.type = wave; o.frequency.value = freq;
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    o.connect(g); g.connect(audio.master);
+    o.start(t); o.stop(t + dur + 0.02);
+  }
+  _hat(t) {
+    const audio = this.audio;
+    if (!audio.ctx || !audio.master) return;
+    const len = Math.floor(audio.ctx.sampleRate * 0.03);
+    const buf = audio.ctx.createBuffer(1, len, audio.ctx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
+    const src = audio.ctx.createBufferSource(); src.buffer = buf;
+    const f = audio.ctx.createBiquadFilter(); f.type = 'highpass'; f.frequency.value = 6000;
+    const g = audio.ctx.createGain(); g.gain.value = 0.05;
+    src.connect(f); f.connect(g); g.connect(audio.master);
+    src.start(t);
+  }
 }

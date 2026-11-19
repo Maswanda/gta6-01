@@ -1,151 +1,141 @@
-// Combat: 3 weapons, bullets, 2 enemy types. The player shoots; enemies shoot back.
-// KEY RULE (bug fix from fab2d34): an enemy bullet that hits a player who is inside a car
-// damages the CAR (2/hit), never the player inside it.
-import { WEAPONS, ENEMY, STEP } from './tuning.js';
-import { createRng } from './rng.js';
-import { sfx } from './audio.js';
+// combat.js — weapons and enemies. Hitscan shooting: the player aims with
+// their heading, G fires, R reloads. Enemy bullets damage the CAR when the
+// player is inside one (2/hit) and never the player — that is the v4 rule.
+// Enemies are spawned by missions (docks, warehouse, casino vault).
+import { T, dist, angDiff, clamp } from './tuning.js';
 
-let nextBulletId = 1;
-let nextEnemyId = 1;
+let enemySeq = 0;
 
-export function spawnEnemies(world, kind, count, x, z, rng) {
-  const spec = ENEMY[kind];
-  const made = [];
-  for (let i = 0; i < count; i += 1) {
-    const a = rng ? rng.range(0, Math.PI * 2) : (i / count) * Math.PI * 2;
-    const r = rng ? rng.range(8, 18) : 12;
-    made.push({
-      id: nextEnemyId, kind, x: x + Math.sin(a) * r, z: z + Math.cos(a) * r,
-      heading: 0, hp: spec.hp, maxHp: spec.hp, cooldown: 0, state: 'hunt',
-    });
-    nextEnemyId += 1;
+export class Combat {
+  constructor() {
+    this.weapon = 'pistol';
+    this.ammo = { pistol: 12, shotgun: 0, smg: 0 };
+    this.reserve = { pistol: 96, shotgun: 0, smg: 0 };
+    this.enemies = [];
+    this.cooldown = 0;
+    this.fireFlash = 0;
   }
-  world.enemies.push(...made);
-  return made;
-}
-
-export function fireWeapon(world, from, tx, tz, weaponName, owner) {
-  const w = WEAPONS[weaponName];
-  if (!w) return false;
-  const dx = tx - from.x, dz = tz - from.z;
-  const base = Math.atan2(dx, dz);
-  const n = w.pellets || 1;
-  for (let i = 0; i < n; i += 1) {
-    const a = base + (Math.random() - 0.5) * w.spread * 2;
-    const speed = 90;
-    world.bullets.push({
-      id: nextBulletId, x: from.x, z: from.z,
-      vx: Math.sin(a) * speed, vz: Math.cos(a) * speed,
-      life: w.range / speed, from: owner, damage: w.damage,
-    });
-    nextBulletId += 1;
+  get unlocked() {
+    return { shotgun: this.reserve.shotgun > 0 || this.ammo.shotgun > 0 || this.weapon === 'shotgun', smg: this.reserve.smg > 0 || this.ammo.smg > 0 || this.weapon === 'smg' };
   }
-  if (owner === 'player') {
-    if (weaponName === 'shotgun') sfx.shotgun(); else sfx.shot();
-  }
-  return true;
-}
-
-export function stepBullets(world, dt) {
-  const p = world.player;
-  for (const b of world.bullets) {
-    b.x += b.vx * dt;
-    b.z += b.vz * dt;
-    b.life -= dt;
-    if (b.life <= 0) continue;
-    // Enemy bullets vs the player: in a car => the CAR takes 2/hit; on foot => the player.
-    if (b.from === 'enemy') {
-      const d = Math.hypot(b.x - p.x, b.z - p.z);
-      if (d < 2.2) {
-        b.life = 0;
-        if (p.inCar) {
-          const car = world.cars.find((c) => c.id === p.inCar);
-          if (car) car.hp = Math.max(0, car.hp - 2);
-        } else {
-          p.hp = Math.max(0, p.hp - 8);
-          sfx.hit();
-        }
-        continue;
-      }
+  unlock(kind) {
+    const w = T.weapons[kind];
+    if (!w) return;
+    if (this.ammo[kind] === 0 && this.reserve[kind] === 0) {
+      this.ammo[kind] = w.mag;
+      this.reserve[kind] = w.reserve;
     }
-    // Player bullets vs enemies.
-    if (b.from === 'player') {
-      for (const e of world.enemies) {
+  }
+  switchWeapon(kind) {
+    if (!T.weapons[kind]) return false;
+    if (kind !== 'pistol' && this.ammo[kind] <= 0 && this.reserve[kind] <= 0) return false;
+    this.weapon = kind;
+    return true;
+  }
+  reload() {
+    const w = T.weapons[this.weapon];
+    const need = w.mag - this.ammo[this.weapon];
+    if (need <= 0 || this.reserve[this.weapon] <= 0) return false;
+    const take = Math.min(need, this.reserve[this.weapon]);
+    this.ammo[this.weapon] += take;
+    this.reserve[this.weapon] -= take;
+    return true;
+  }
+  spawnEnemies(list) {
+    // list: [{x, z, kind}] — kind 'bayking' | 'enforcer'
+    for (const e of list) {
+      this.enemies.push({
+        id: ++enemySeq,
+        kind: e.kind || 'bayking',
+        pos: { x: e.x, z: e.z },
+        hp: T.enemyHp,
+        shootTimer: 0.8 + Math.random() * 0.8,
+        heading: 0,
+        mesh: null,
+      });
+    }
+  }
+  get alive() { return this.enemies.filter((e) => e.hp > 0); }
+  get enemiesLeft() { return this.alive.length; }
+  clearEnemies() { this.enemies = []; }
+  // Fire the current weapon along the player's heading. Returns hits.
+  // The helicopter is a valid target too (2D aim at its ground position):
+  // gunfire brings it down, which is how mission 11 is won.
+  fire(player, audio, world) {
+    if (this.cooldown > 0) return 0;
+    const w = T.weapons[this.weapon];
+    if (this.ammo[this.weapon] <= 0) { this.reload(); return 0; }
+    this.cooldown = w.rate;
+    this.ammo[this.weapon] -= 1;
+    this.fireFlash = 0.08;
+    if (audio) audio.shot(this.weapon);
+    const origin = player.inCar ? player.inCar.pos : player.pos;
+    const heading = player.heading;
+    let hits = 0;
+    const pellets = w.pellets || 1;
+    for (let p = 0; p < pellets; p++) {
+      const spread = (pellets > 1 ? (p - (pellets - 1) / 2) * 0.09 : 0);
+      const aim = heading + spread;
+      let best = null, bestD = w.range, bestAng = 0.35;
+      for (const e of this.enemies) {
         if (e.hp <= 0) continue;
-        const d = Math.hypot(b.x - e.x, b.z - e.z);
-        if (d < 1.8) {
-          b.life = 0;
-          e.hp = Math.max(0, e.hp - b.damage);
-          spawnHitSpark(world, e.x, e.z);
-          if (e.hp <= 0) onEnemyKilled(world, e);
-          break;
-        }
+        const d = dist(origin.x, origin.z, e.pos.x, e.pos.z);
+        if (d > w.range) continue;
+        const ang = Math.abs(angDiff(aim, Math.atan2(e.pos.x - origin.x, e.pos.z - origin.z)));
+        // Wider cone up close, tighter far away.
+        const cone = 0.35 + (1 - d / w.range) * 0.25;
+        if (ang < cone && d < bestD) { best = e; bestD = d; bestAng = ang; }
       }
-      if (b.life <= 0) continue;
-      // Player bullets vs police cars (raises heat, damages the car).
-      for (const car of world.cars) {
-        if (car.driver !== 'police' || car.hp <= 0) continue;
-        const d = Math.hypot(b.x - car.x, b.z - car.z);
-        if (d < 2.4) {
-          b.life = 0;
-          car.hp = Math.max(0, car.hp - b.damage);
-          world.player.heat = Math.min(5, (world.player.heat || 0) + 0.2);
-          break;
-        }
+      if (best) {
+        best.hp -= w.damage;
+        hits++;
+        if (best.hp <= 0) best.hp = 0;
       }
-      if (b.life <= 0) continue;
-      // Player bullets vs the mission courier car (chase objective).
-      const target = world.missions.targetCar;
-      if (target && target.hp > 0) {
-        const d = Math.hypot(b.x - target.x, b.z - target.z);
-        if (d < 2.4) {
-          b.life = 0;
-          target.hp = Math.max(0, target.hp - b.damage);
-          spawnHitSpark(world, target.x, target.z);
+      // Helicopter: same cone test against its ground position. Each
+      // pellet that would hit it deals full weapon damage.
+      const heli = world && world.heli;
+      if (heli && heli.active) {
+        const d = dist(origin.x, origin.z, heli.pos.x, heli.pos.z);
+        if (d <= w.range) {
+          const ang = Math.abs(angDiff(aim, Math.atan2(heli.pos.x - origin.x, heli.pos.z - origin.z)));
+          const cone = 0.35 + (1 - d / w.range) * 0.25;
+          if (ang < cone) {
+            heli.damage(w.damage, world);
+            hits++;
+          }
         }
       }
     }
+    return hits;
   }
-  world.bullets = world.bullets.filter((b) => b.life > 0);
-  // Clean up dead enemies.
-  world.enemies = world.enemies.filter((e) => e.hp > 0);
-}
-
-function onEnemyKilled(world, e) {
-  const p = world.player;
-  p.cash += e.kind === 'king' ? 120 : 60;
-  p.heat = Math.min(5, (p.heat || 0) + 1);
-  p.wanted = Math.min(5, Math.max(p.wanted, p.heat >= 3 ? 2 : 1));
-  world.missions.kills = (world.missions.kills || 0) + 1;
-  spawnHitSpark(world, e.x, e.z);
-  sfx.cash();
-}
-
-export function spawnHitSpark(world, x, z) {
-  for (let i = 0; i < 5; i += 1) {
-    world.particles.push({
-      id: world.particleId++, x, y: 1.2, z,
-      life: 0.5, color: 0xffe040,
-    });
-  }
-}
-
-// Enemies hunt the player: walk toward them, shoot when in range and on cooldown.
-export function stepEnemies(world, dt) {
-  const p = world.player;
-  for (const e of world.enemies) {
-    const spec = ENEMY[e.kind];
-    const d = Math.hypot(p.x - e.x, p.z - e.z);
-    e.heading = Math.atan2(p.x - e.x, p.z - e.z);
-    e.cooldown -= dt;
-    if (d > spec.range * 0.9) {
-      e.x += Math.sin(e.heading) * spec.speed * dt;
-      e.z += Math.cos(e.heading) * spec.speed * dt;
-    } else if (e.cooldown <= 0 && d < spec.range) {
-      e.cooldown = spec.rate;
-      fireWeapon(world, e, p.x, p.z, 'pistol', 'enemy');
+  // Enemies shoot at the player. On foot the player takes damage; in a car
+  // the CAR takes 2/hit and the player is safe inside it.
+  update(dt, player, world) {
+    if (this.cooldown > 0) this.cooldown -= dt;
+    if (this.fireFlash > 0) this.fireFlash -= dt;
+    for (const e of this.enemies) {
+      if (e.hp <= 0) continue;
+      const target = player.inCar ? player.inCar.pos : player.pos;
+      const d = dist(e.pos.x, e.pos.z, target.x, target.z);
+      e.heading = Math.atan2(target.x - e.pos.x, target.z - e.pos.z);
+      e.shootTimer -= dt;
+      if (d < T.enemyShootRange && e.shootTimer <= 0) {
+        e.shootTimer = T.enemyShootInterval * (0.8 + Math.random() * 0.5);
+        if (player.inCar) {
+          player.inCar.damage(T.enemyBulletCarDamage);
+        } else {
+          player.damage(T.enemyBulletPlayerDamage);
+        }
+        if (world.effects) world.effects.muzzle(e.pos.x, e.pos.z);
+      }
+      // Enemies close in slowly if far away.
+      if (d > 18) {
+        const step = 3.2 * dt;
+        e.pos.x += Math.sin(e.heading) * step;
+        e.pos.z += Math.cos(e.heading) * step;
+      }
     }
+    // Drop dead enemies from the list once the player is far away.
+    if (this.enemies.length > 40) this.enemies = this.enemies.filter((e) => e.hp > 0);
   }
 }
-
-export function resetCombatIds() { nextBulletId = 1; nextEnemyId = 1; }
