@@ -1,5 +1,9 @@
 # Solmar Bay: Heatwave — Make GTA 6 (gta6-01)
 
+[![make.fun · gta6-01](https://make.fun/badge/gta6-01.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
+[![rank](https://make.fun/badge/gta6-01/Maswanda/gta6-01/rank.svg)](https://make.fun/bounty/gta6-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
+[![reward](https://make.fun/badge/gta6-01/Maswanda/gta6-01/reward.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
+
 An open-world crime game in one self-contained web app: drive, fight, rob, and survive
 12 story missions across 4 districts of Solmar Bay. No CDN, no network requests —
 three.js is vendored under `game/vendor/three/`, all audio is procedural Web Audio.
