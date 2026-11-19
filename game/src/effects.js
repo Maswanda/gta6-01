@@ -1,8 +1,9 @@
-// Effects: a small pooled particle system for the game's feedback — tyre
-// smoke when a car slides, sparks on a crash, muzzle flashes and the burst
-// when an enemy goes down. v4 adds the rotor wash: dust kicked up in a ring
-// on the street below the helicopter. One shared pool, no allocations in
-// the hot loop.
+// Effects: one pooled particle system for the game's feedback — tyre smoke
+// when a car slides, sparks on a crash, muzzle flashes, the burst when an
+// enemy goes down, and the rotor wash: dust kicked up in a ring on the
+// street below the helicopter. One shared pool, no allocations in the hot
+// loop; materials are shared per colour and the fade is done by scale.
+
 const MAX_PARTICLES = 140;
 
 export class Effects {
@@ -35,7 +36,7 @@ export class Effects {
 
   // A spray of bits in all directions (impacts, takedowns).
   burst(pos, color, count, speed, life) {
-    for (let i = 0; i < count; i++) {
+    for (let i = 0; i < count; i += 1) {
       const a = Math.random() * Math.PI * 2;
       const up = Math.random() * 2.2 + 0.6;
       this.spawn(
@@ -65,14 +66,15 @@ export class Effects {
     this.burst(pos, 0xffffff, 3, 2.0, 0.25);
   }
 
-  // A shower of gold when cash changes hands — a takedown, a stopped crime,
-  // an ATM robbery. The coins burst up and rain down.
+  // A shower of gold when cash changes hands — a takedown, a stopped
+  // crime, an ATM robbery. The coins burst up and rain down.
   cashShower(pos) {
     this.burst(pos, 0xffc23a, 14, 3.5, 0.9);
     this.burst(pos, 0x7ddb8a, 6, 2.5, 0.7);
   }
 
-  // Thick tyre smoke for a drift, bigger than the usual skid puff.
+  // Thick tyre smoke for a drift, bigger than the usual skid puff, with a
+  // spark or two in it.
   driftSmoke(pos) {
     this.spawn(
       pos,
@@ -105,7 +107,7 @@ export class Effects {
   // blown outward from the downwash. Called on a short timer, not every
   // frame, so it reads as a gust rather than a cloud.
   rotorWash(pos) {
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 6; i += 1) {
       const a = (i / 6) * Math.PI * 2 + Math.random() * 0.5;
       const r = 3.5 + Math.random() * 1.5;
       this.spawn(
@@ -119,7 +121,7 @@ export class Effects {
   }
 
   update(dt) {
-    for (let i = this.parts.length - 1; i >= 0; i--) {
+    for (let i = this.parts.length - 1; i >= 0; i -= 1) {
       const p = this.parts[i];
       p.life -= dt;
       if (p.life <= 0) {
@@ -130,8 +132,8 @@ export class Effects {
       p.mesh.position.addScaledVector(p.vel, dt);
       p.vel.y -= 2.4 * dt;
       p.vel.multiplyScalar(1 - 1.6 * dt);
+      // Shared material, so fade by shrinking instead of by opacity.
       const k = p.life / p.maxLife;
-      p.mesh.material = p.mesh.material; // shared material: fade by scale instead
       p.mesh.scale.setScalar(Math.max(0.05, k) * 1.2);
       if (p.mesh.position.y < 0.12) p.mesh.position.y = 0.12;
     }

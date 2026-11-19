@@ -1,21 +1,25 @@
-// HUD v4: cash, wanted stars, health and stamina, the current weapon,
-// speed, the mission objective, a mission tracker (M lists every job with
-// its status), and a bigger minimap with district names, collectible dots,
+// HUD: cash, wanted stars, health and stamina, the current weapon, speed,
+// the mission objective, a mission tracker (M lists every job with its
+// status), and a bigger minimap with district names, collectible dots,
 // side-activity markers and red crime blips — all DOM + one 2D canvas,
 // drawn every frame from the live game state. Also owns the start / pause /
-// busted screens. v4 adds the radio readout (current station, every frame),
-// a helicopter warning while the air unit is up, the garage's owned cars
-// in the tracker, and the chopper + safehouse markers on the minimap.
+// busted screens. The radio readout (current station, every frame), a
+// helicopter warning while the air unit is up, the garage's owned cars in
+// the tracker, and the chopper + safehouse markers on the minimap.
 import { CFG, STREET_LINES, districtAt } from './config.js';
+
+const HUD_IDS = [
+  'cash', 'stars', 'health-fill', 'health-num', 'stamina-fill', 'stamina-num',
+  'ammo', 'weapon', 'speed', 'district', 'objective', 'objective-text', 'objective-dist',
+  'prompt', 'message', 'banner', 'banner-title', 'banner-sub', 'menu', 'pause', 'end',
+  'end-title', 'end-sub', 'minimap', 'mission-list', 'timer', 'save-note', 'btn-continue',
+  'crime-indicator', 'daynight', 'cash-popup', 'radio', 'heli-indicator',
+];
 
 export class HUD {
   constructor() {
     this.el = {};
-    for (const id of ['cash', 'stars', 'health-fill', 'health-num', 'stamina-fill', 'stamina-num',
-      'ammo', 'weapon', 'speed', 'district', 'objective', 'objective-text', 'objective-dist',
-      'prompt', 'message', 'banner', 'banner-title', 'banner-sub', 'menu', 'pause', 'end',
-      'end-title', 'end-sub', 'minimap', 'mission-list', 'timer', 'save-note', 'btn-continue',
-      'crime-indicator', 'daynight', 'cash-popup', 'radio', 'heli-indicator']) {
+    for (const id of HUD_IDS) {
       this.el[id] = document.getElementById(id);
     }
     this.minimap = this.el.minimap.getContext('2d');
@@ -117,7 +121,7 @@ export class HUD {
     const taxi = side.taxiBest ? `Taxi best ${Math.round(side.taxiBest)}s (${side.taxiRuns} runs)` : 'Taxi — not run yet';
     const race = side.raceBest ? `Race best ${Math.round(side.raceBest)}s (${side.raceRuns} runs)` : 'Street race — not run yet';
     const crime = world.crime ? `Crimes stopped ${world.crime.interventions} (seen ${world.crime.eventsSeen})` : '';
-    // v4: the garage's cars and the radio station, so the tracker shows the
+    // The garage's cars and the radio station, so the tracker shows the
     // whole run — story, side jobs, rides and music.
     const garage = world.garage
       ? (world.garage.owned.length
@@ -136,8 +140,16 @@ export class HUD {
     if (this.lastCash === 0 && p.cash === 0) this.lastCash = 0;
     else if (p.cash > this.lastCash) this.showCashPopup(p.cash - this.lastCash);
     this.lastCash = p.cash;
+    this.drawStars(world);
+    this.drawStatus(world, p);
+    this.drawMission(world, p);
+    this.drawTimers(dt, world);
+    this.drawMinimap(world);
+  }
+
+  drawStars(world) {
     let stars = '';
-    for (let i = 0; i < CFG.maxWanted; i++) stars += i < world.police.wanted ? '★' : '☆';
+    for (let i = 0; i < CFG.maxWanted; i += 1) stars += i < world.police.wanted ? '★' : '☆';
     this.el.stars.textContent = stars;
     this.el.stars.style.color = world.police.wanted > 0 ? '#ffcf3a' : '#8a8f98';
     // The stars pulse when the wanted level changes.
@@ -147,6 +159,9 @@ export class HUD {
       this.el.stars.style.animation = '';
       this.lastWanted = world.police.wanted;
     }
+  }
+
+  drawStatus(world, p) {
     // Crime indicator: a red line while an ambient event is live.
     if (this.el['crime-indicator']) {
       const crime = world.crime && world.crime.event;
@@ -168,7 +183,7 @@ export class HUD {
       const mn = String(mm).padStart(2, '0');
       this.el.daynight.textContent = n > 0.5 ? `🌙 NIGHT ${hh}:${mn}` : `☀️ DAY ${hh}:${mn}`;
     }
-    // v4: the radio readout — the current station, in every frame — and the
+    // The radio readout — the current station, in every frame — and the
     // helicopter warning while the air unit is up.
     if (this.el.radio && world.radio) {
       this.el.radio.textContent = world.radio.on ? `♪ ${world.radio.stationName()}` : '♪ RADIO OFF — press V';
@@ -197,9 +212,12 @@ export class HUD {
     this.el.speed.textContent = `${Math.round(speed)} km/h`;
     const pp = p.inCar ? p.inCar.pos : p.pos;
     this.el.district.textContent = districtAt(pp.x, pp.z);
-    // Objective + distance.
+  }
+
+  drawMission(world, p) {
     const m = world.missions;
     this.el['objective-text'].textContent = m.objectiveText();
+    const pp = p.inCar ? p.inCar.pos : p.pos;
     const target = m.targetPoint();
     if (target) {
       const d = Math.hypot(pp.x - target.x, pp.z - target.z);
@@ -216,6 +234,9 @@ export class HUD {
     this.el.timer.textContent = timerText;
     this.el.prompt.textContent = this.promptText;
     this.promptText = '';
+  }
+
+  drawTimers(dt, world) {
     if (this.messageTimer > 0) {
       this.messageTimer -= dt;
       if (this.messageTimer <= 0) this.el.message.style.opacity = '0';
@@ -224,7 +245,6 @@ export class HUD {
       this.bannerTimer -= dt;
       if (this.bannerTimer <= 0) this.el.banner.style.opacity = '0';
     }
-    this.drawMinimap(world);
   }
 
   drawMinimap(world) {
@@ -238,8 +258,8 @@ export class HUD {
     // Blocks.
     c.fillStyle = '#3a3f47';
     const half = CFG.streetWidth / 2;
-    for (let i = 0; i < STREET_LINES.length - 1; i++) {
-      for (let j = 0; j < STREET_LINES.length - 1; j++) {
+    for (let i = 0; i < STREET_LINES.length - 1; i += 1) {
+      for (let j = 0; j < STREET_LINES.length - 1; j += 1) {
         c.fillRect(toX(STREET_LINES[i] + half), toZ(STREET_LINES[j] + half),
           (CFG.blockPitch - CFG.streetWidth) * scale, (CFG.blockPitch - CFG.streetWidth) * scale);
       }
@@ -254,91 +274,9 @@ export class HUD {
     c.fillText('OLD TOWN', toX(-200), toZ(-40));
     c.fillText('DOWNTOWN', toX(-40), toZ(-20));
     c.fillText('MARINA', toX(-30), toZ(210));
-    // Collectible coins not yet found.
-    c.fillStyle = '#ffc23a';
-    for (const [id, g] of world.side.collectibleMeshes) {
-      if (world.side.collected.has(id)) continue;
-      c.beginPath();
-      c.arc(toX(g.position.x), toZ(g.position.z), 2.5, 0, Math.PI * 2);
-      c.fill();
-    }
-    // Taxi passenger / destination.
-    if (world.side.taxi.state === 'pickup' && world.side.taxi.passenger) {
-      c.fillStyle = '#39d0ff';
-      c.beginPath();
-      c.arc(toX(world.side.taxi.passenger.x), toZ(world.side.taxi.passenger.z), 4, 0, Math.PI * 2);
-      c.fill();
-    }
-    if (world.side.taxi.state === 'deliver' && world.side.taxi.dest) {
-      c.fillStyle = '#39d0ff';
-      c.beginPath();
-      c.arc(toX(world.side.taxi.dest.x), toZ(world.side.taxi.dest.z), 4, 0, Math.PI * 2);
-      c.fill();
-    }
-    // Race checkpoints.
-    if (world.side.race.state === 'racing') {
-      c.fillStyle = '#ff5a4a';
-      world.side.raceRings.forEach((r, i) => {
-        if (i < world.side.race.index) return;
-        c.beginPath();
-        c.arc(toX(r.pt.x), toZ(r.pt.z), 4, 0, Math.PI * 2);
-        c.fill();
-      });
-    }
-    // Mission target.
-    const target = world.missions.targetPoint();
-    if (target) {
-      const pulse = 6 + Math.sin(performance.now() / 200) * 2;
-      c.fillStyle = '#ffd23a';
-      c.beginPath();
-      c.arc(toX(target.x), toZ(target.z), pulse, 0, Math.PI * 2);
-      c.fill();
-      c.strokeStyle = '#7a5a00';
-      c.stroke();
-    }
-    // Active crime event: a red blip that pulses.
-    if (world.crime && world.crime.event) {
-      const pos = world.crime.eventPos();
-      if (pos) {
-        const pulse = 6 + Math.sin(performance.now() / 150) * 2.5;
-        c.fillStyle = '#ff3333';
-        c.beginPath();
-        c.arc(toX(pos.x), toZ(pos.z), pulse, 0, Math.PI * 2);
-        c.fill();
-        c.strokeStyle = '#7a0000';
-        c.stroke();
-      }
-    }
-    // v4: the safehouse is a green square on the map — the place to rest
-    // the heat — and the chopper is a pulsing orange dot while it is up.
-    const sh = world.city.landmarks.safehouse;
-    if (sh) {
-      c.fillStyle = '#58c96b';
-      c.fillRect(toX(sh.x) - 4, toZ(sh.z) - 4, 8, 8);
-      c.strokeStyle = '#1e5a2a';
-      c.strokeRect(toX(sh.x) - 4, toZ(sh.z) - 4, 8, 8);
-    }
-    if (world.heli && world.heli.active) {
-      const pulse = 5 + Math.sin(performance.now() / 150) * 2;
-      c.fillStyle = '#ff8a2a';
-      c.beginPath();
-      c.arc(toX(world.heli.pos.x), toZ(world.heli.pos.z), pulse, 0, Math.PI * 2);
-      c.fill();
-      c.strokeStyle = '#7a3a00';
-      c.stroke();
-    }
-    // Traffic (grey), police (red/blue flash), player (white arrow).
-    c.fillStyle = '#9aa2ad';
-    for (const car of world.allCars) {
-      if (!car.alive || car.isPlayer) continue;
-      c.fillRect(toX(car.pos.x) - 1.5, toZ(car.pos.z) - 1.5, 3, 3);
-    }
-    for (const pc of world.police.cars) {
-      c.fillStyle = Math.floor(performance.now() / 260) % 2 === 0 ? '#ff3333' : '#3388ff';
-      c.beginPath();
-      c.arc(toX(pc.pos.x), toZ(pc.pos.z), 4, 0, Math.PI * 2);
-      c.fill();
-    }
+    this.drawMapDots(c, world, toX, toZ);
+    this.drawMapUnits(c, world, toX, toZ);
+    // Player: a white arrow.
     const pp = world.player.inCar ? world.player.inCar.pos : world.player.pos;
     const heading = world.player.inCar ? world.player.inCar.heading : world.player.heading;
     c.save();
@@ -355,5 +293,80 @@ export class HUD {
     c.fillStyle = '#ffffff';
     c.font = 'bold 11px sans-serif';
     c.fillText('N', 4, 12);
+  }
+
+  // Coins, taxi, race rings, mission target, crime blip, safehouse, chopper.
+  drawMapDots(c, world, toX, toZ) {
+    const dot = (x, z, r, color, stroke) => {
+      c.fillStyle = color;
+      c.beginPath();
+      c.arc(toX(x), toZ(z), r, 0, Math.PI * 2);
+      c.fill();
+      if (stroke) {
+        c.strokeStyle = stroke;
+        c.stroke();
+      }
+    };
+    // Collectible coins not yet found.
+    for (const [id, g] of world.side.collectibleMeshes) {
+      if (world.side.collected.has(id)) continue;
+      dot(g.position.x, g.position.z, 2.5, '#ffc23a');
+    }
+    // Taxi passenger / destination.
+    if (world.side.taxi.state === 'pickup' && world.side.taxi.passenger) {
+      dot(world.side.taxi.passenger.x, world.side.taxi.passenger.z, 4, '#39d0ff');
+    }
+    if (world.side.taxi.state === 'deliver' && world.side.taxi.dest) {
+      dot(world.side.taxi.dest.x, world.side.taxi.dest.z, 4, '#39d0ff');
+    }
+    // Race checkpoints.
+    if (world.side.race.state === 'racing') {
+      world.side.raceRings.forEach((r, i) => {
+        if (i < world.side.race.index) return;
+        dot(r.pt.x, r.pt.z, 4, '#ff5a4a');
+      });
+    }
+    // Mission target.
+    const target = world.missions.targetPoint();
+    if (target) {
+      const pulse = 6 + Math.sin(performance.now() / 200) * 2;
+      dot(target.x, target.z, pulse, '#ffd23a', '#7a5a00');
+    }
+    // Active crime event: a red blip that pulses.
+    if (world.crime && world.crime.event) {
+      const pos = world.crime.eventPos();
+      if (pos) {
+        const pulse = 6 + Math.sin(performance.now() / 150) * 2.5;
+        dot(pos.x, pos.z, pulse, '#ff3333', '#7a0000');
+      }
+    }
+    // The safehouse is a green square on the map — the place to rest the
+    // heat — and the chopper is a pulsing orange dot while it is up.
+    const sh = world.city.landmarks.safehouse;
+    if (sh) {
+      c.fillStyle = '#58c96b';
+      c.fillRect(toX(sh.x) - 4, toZ(sh.z) - 4, 8, 8);
+      c.strokeStyle = '#1e5a2a';
+      c.strokeRect(toX(sh.x) - 4, toZ(sh.z) - 4, 8, 8);
+    }
+    if (world.heli && world.heli.active) {
+      const pulse = 5 + Math.sin(performance.now() / 150) * 2;
+      dot(world.heli.pos.x, world.heli.pos.z, pulse, '#ff8a2a', '#7a3a00');
+    }
+  }
+
+  // Traffic (grey), police (red/blue flash).
+  drawMapUnits(c, world, toX, toZ) {
+    c.fillStyle = '#9aa2ad';
+    for (const car of world.allCars) {
+      if (!car.alive || car.isPlayer) continue;
+      c.fillRect(toX(car.pos.x) - 1.5, toZ(car.pos.z) - 1.5, 3, 3);
+    }
+    for (const pc of world.police.cars) {
+      c.fillStyle = Math.floor(performance.now() / 260) % 2 === 0 ? '#ff3333' : '#3388ff';
+      c.beginPath();
+      c.arc(toX(pc.pos.x), toZ(pc.pos.z), 4, 0, Math.PI * 2);
+      c.fill();
+    }
   }
 }

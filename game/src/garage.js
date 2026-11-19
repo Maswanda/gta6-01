@@ -10,6 +10,12 @@ import { CFG } from './config.js';
 import { Rng } from './random.js';
 import { spawnOwnedCar } from './vehicles.js';
 
+// Prices print with a thousands separator — $1,200 reads faster than
+// $1200 when the player is scanning the panel at a glance.
+export function money(n) {
+  return '$' + Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
 export const GARAGE_STOCK = [
   { id: 'sedan', type: 'sedan', name: 'Solmar Sedan', price: 800 },
   { id: 'van', type: 'van', name: 'Harbor Van', price: 600 },
@@ -38,10 +44,10 @@ export class GarageSystem {
       this.listEl.addEventListener('click', (ev) => {
         const btn = ev.target.closest('button[data-act]');
         if (!btn) return;
-        const id = btn.dataset.id;
-        const act = btn.dataset.act;
         const world = window.__solmar && window.__solmar.world;
         if (!world) return;
+        const id = btn.dataset.id;
+        const act = btn.dataset.act;
         if (act === 'buy') this.buy(id, world);
         else if (act === 'sell') this.sell(id, world);
         else if (act === 'select') this.select(id, world);
@@ -88,28 +94,31 @@ export class GarageSystem {
     if (this.panelEl) this.panelEl.style.display = 'none';
   }
 
-  // Rebuild the panel's rows: name, price (with the daily deal struck
+  // One row of the panel: name, price (with the daily deal struck
   // through), and the action that fits — buy, select, or sell.
+  rowHtml(s, cash) {
+    const price = this.priceOf(s);
+    const owned = this.owned.includes(s.id);
+    const active = this.activeId === s.id;
+    const deal = this.isDeal(s) ? ' <span class="deal">DEAL −20%</span>' : '';
+    const back = Math.round(price * CFG.garageSellBack);
+    let action = '';
+    if (!owned) {
+      action = `<button data-act="buy" data-id="${s.id}" ${cash < price ? 'disabled' : ''}>Buy ${money(price)}</button>`;
+    } else if (active) {
+      action = `<button data-act="sell" data-id="${s.id}">Sell ${money(back)}</button> <span class="active-car">IN USE</span>`;
+    } else {
+      action = `<button data-act="select" data-id="${s.id}">Select</button> <button data-act="sell" data-id="${s.id}">Sell ${money(back)}</button>`;
+    }
+    return `<div class="garage-row"><span class="garage-name">${s.name}${deal}</span><span class="garage-price">${money(price)}</span>${action}</div>`;
+  }
+
   renderPanel(world) {
     if (!this.listEl) return;
     const cash = world.player.cash;
-    const rows = GARAGE_STOCK.map((s) => {
-      const price = this.priceOf(s);
-      const owned = this.owned.includes(s.id);
-      const active = this.activeId === s.id;
-      const deal = this.isDeal(s) ? ' <span class="deal">DEAL −20%</span>' : '';
-      let action = '';
-      if (!owned) {
-        action = `<button data-act="buy" data-id="${s.id}" ${cash < price ? 'disabled' : ''}>Buy $${price}</button>`;
-      } else if (active) {
-        action = `<button data-act="sell" data-id="${s.id}">Sell $${Math.round(price * CFG.garageSellBack)}</button> <span class="active-car">IN USE</span>`;
-      } else {
-        action = `<button data-act="select" data-id="${s.id}">Select</button> <button data-act="sell" data-id="${s.id}">Sell $${Math.round(price * CFG.garageSellBack)}</button>`;
-      }
-      return `<div class="garage-row"><span class="garage-name">${s.name}${deal}</span><span class="garage-price">$${price}</span>${action}</div>`;
-    }).join('');
+    const rows = GARAGE_STOCK.map((s) => this.rowHtml(s, cash)).join('');
     this.listEl.innerHTML = rows +
-      `<div class="garage-foot">Cash: $${cash} · Owned: ${this.owned.length} · Sell returns 60% · The daily deal changes each load.</div>`;
+      `<div class="garage-foot">Cash: ${money(cash)} · Owned: ${this.owned.length} · Sell returns 60% · The daily deal changes each load.</div>`;
   }
 
   // Buy a car: pay, own it, and put it on the street outside Rico's.
@@ -118,14 +127,14 @@ export class GarageSystem {
     if (!s || this.owned.includes(id)) return false;
     const price = this.priceOf(s);
     if (world.player.cash < price) {
-      world.hud.flashMessage(`Not enough cash — the ${s.name} is $${price}.`);
+      world.hud.flashMessage(`Not enough cash — the ${s.name} is ${money(price)}.`);
       return false;
     }
     world.player.cash -= price;
     this.owned.push(id);
     this.activeId = id;
     this.spawnCar(id, world);
-    world.hud.showBanner('NEW RIDE', `The ${s.name} is yours — $${price}. Keys are in the ignition.`);
+    world.hud.showBanner('NEW RIDE', `The ${s.name} is yours — ${money(price)}. Keys are in the ignition.`);
     world.sound.jingle();
     world.save.save();
     this.renderPanel(world);
@@ -147,7 +156,7 @@ export class GarageSystem {
     this.owned = this.owned.filter((o) => o !== id);
     if (this.activeId === id) this.activeId = this.owned.length ? this.owned[0] : null;
     world.player.cash += back;
-    world.hud.flashMessage(`Sold the ${s.name} back to Rico — +$${back}.`);
+    world.hud.flashMessage(`Sold the ${s.name} back to Rico — +${money(back)}.`);
     world.sound.chime();
     world.save.save();
     this.renderPanel(world);

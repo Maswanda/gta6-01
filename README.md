@@ -24,6 +24,15 @@ Solmar Bay: Heatwave is a 3D open-world crime game (three.js) set in the sun-soa
 - HUD with a bigger minimap (district names, collectible and race markers, red crime blips), a mission tracker (M), stamina, a district readout, a day/night clock and a crime indicator
 - Synthesized audio (engine, sirens, horn, skid, cash register, ambient pad); no network requests — everything runs from static files
 
+## Screenshots
+
+Each shot is staged deterministically with a `?shot=` URL (`shots.json` lists them, seed 11):
+
+1. `1-showcase.jpg` — golden hour over the Marina, radio on (SOLMAR 88.5)
+2. `2-heli.jpg` — five-star helicopter pursuit at night, searchlight on the player
+3. `3-combat.jpg` — the rival-crew fight on the beachfront avenue
+4. `4-garage.jpg` — Rico's garage panel with two cars bought, the Last Run waiting
+
 ## Play
 
 Open `game/index.html` in a desktop browser (or run `node serve.ts` and visit http://localhost:8080). Keyboard + mouse.

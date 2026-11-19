@@ -1,9 +1,12 @@
-// Keyboard + mouse input v2. Tracks held keys and edge-triggered presses
-// (consume() reports a key once, so E / R / Escape fire a single action).
-// New in v2: M opens the mission tracker, 1/2/3 pick a weapon, Q cycles
-// weapons, H honks the horn, and T works the side activities (taxi, race).
-// v3: C crouches, and pressKey/releaseKey let the automated play-test hold
-// a key down (a drift needs W + A together for more than a frame).
+// Keyboard + mouse input. Held keys live in one set, edge-triggered
+// presses in another — consume() reports a key once, so E, R and Escape
+// each fire a single action per press. M opens the mission tracker, 1/2/3
+// pick a weapon, Q cycles weapons, H honks, T works the side activities,
+// C crouches, and pressKey/releaseKey let the automated play-test hold a
+// key down (a drift needs W + D together for more than a frame).
+
+const SCROLL_KEYS = ['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
+
 export class Input {
   constructor() {
     this.down = new Set();
@@ -21,9 +24,7 @@ export class Input {
       this.down.add(e.code);
       this.pressed.add(e.code);
       this.anyKey = true;
-      if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) {
-        e.preventDefault();
-      }
+      if (SCROLL_KEYS.includes(e.code)) e.preventDefault();
     });
     window.addEventListener('keyup', (e) => this.down.delete(e.code));
     window.addEventListener('blur', () => {
@@ -33,15 +34,14 @@ export class Input {
     canvas.addEventListener('pointerdown', (e) => {
       this.dragging = true;
       canvas.setPointerCapture(e.pointerId);
-      // Track mouse buttons so Mouse0 (punch) and Mouse2 (shoot) work.
+      // Mouse buttons count as keys, so Mouse0 punches and Mouse2 shoots.
       const code = e.button === 2 ? 'Mouse2' : 'Mouse0';
       this.down.add(code);
       this.pressed.add(code);
     });
     canvas.addEventListener('pointerup', (e) => {
       this.dragging = false;
-      const code = e.button === 2 ? 'Mouse2' : 'Mouse0';
-      this.down.delete(code);
+      this.down.delete(e.button === 2 ? 'Mouse2' : 'Mouse0');
     });
     canvas.addEventListener('pointermove', (e) => {
       if (!this.dragging) return;
@@ -59,7 +59,7 @@ export class Input {
     return this.down.has(code);
   }
 
-  // Hold or release a key from code (the play-test's drift needs this).
+  // Hold or release a key from code — the play-test's drift needs this.
   pressKey(code) {
     this.down.add(code);
     this.anyKey = true;
@@ -69,14 +69,14 @@ export class Input {
     this.down.delete(code);
   }
 
-  // True once for the frame the key went down; clears after being read.
+  // True once, for the frame the key went down; clears after being read.
   consume(code) {
     if (!this.pressed.has(code)) return false;
     this.pressed.delete(code);
     return true;
   }
 
-  // WASD / arrows as a -1..1 pair, already normalised by the caller.
+  // WASD / arrows as a -1..1 pair.
   moveAxes() {
     let x = 0;
     let y = 0;

@@ -1,8 +1,8 @@
 // All sound is synthesised with WebAudio — no audio files, no network.
-// v4 adds the helicopter's rotor chop and a station-change blip for the
-// radio, on top of v2's wanted sting, pickup chime, car horn, tyre skid,
-// door slam, race countdown beeps and low ambient pad, and the engine,
-// siren, gunshots, punches and mission jingles.
+// The wanted sting, pickup chime, car horn, tyre skid, door slam, race
+// countdown beeps and low ambient pad sit under the engine, siren,
+// gunshots, punches and mission jingles; v4 adds the helicopter's rotor
+// chop and a station-change blip for the radio.
 export class SoundBank {
   constructor() {
     this.ctx = null;
@@ -32,45 +32,57 @@ export class SoundBank {
       this.master = this.ctx.createGain();
       this.master.gain.value = 0.35;
       this.master.connect(this.ctx.destination);
-      // Engine: a low sawtooth whose pitch follows speed.
-      this.engineOsc = this.ctx.createOscillator();
-      this.engineOsc.type = 'sawtooth';
-      this.engineOsc.frequency.value = 55;
-      this.engineGain = this.ctx.createGain();
-      this.engineGain.gain.value = 0;
-      const engineFilter = this.ctx.createBiquadFilter();
-      engineFilter.type = 'lowpass';
-      engineFilter.frequency.value = 420;
-      this.engineOsc.connect(engineFilter);
-      engineFilter.connect(this.engineGain);
-      this.engineGain.connect(this.master);
-      this.engineOsc.start();
-      // Siren: a sine that alternates between two tones.
-      this.sirenOsc = this.ctx.createOscillator();
-      this.sirenOsc.type = 'sine';
-      this.sirenOsc.frequency.value = 780;
-      this.sirenGain = this.ctx.createGain();
-      this.sirenGain.gain.value = 0;
-      this.sirenOsc.connect(this.sirenGain);
-      this.sirenGain.connect(this.master);
-      this.sirenOsc.start();
-      // Ambient pad: two detuned triangles, very quiet, always on.
-      this.padOsc = this.ctx.createOscillator();
-      this.padOsc.type = 'triangle';
-      this.padOsc.frequency.value = 110;
-      const padOsc2 = this.ctx.createOscillator();
-      padOsc2.type = 'triangle';
-      padOsc2.frequency.value = 164.8;
-      this.padGain = this.ctx.createGain();
-      this.padGain.gain.value = 0.02;
-      this.padOsc.connect(this.padGain);
-      padOsc2.connect(this.padGain);
-      this.padGain.connect(this.master);
-      this.padOsc.start();
-      padOsc2.start();
+      this.buildEngineVoice();
+      this.buildSirenVoice();
+      this.buildPadVoice();
     } catch {
       this.ctx = null;
     }
+  }
+
+  // Engine: a low sawtooth whose pitch follows speed.
+  buildEngineVoice() {
+    this.engineOsc = this.ctx.createOscillator();
+    this.engineOsc.type = 'sawtooth';
+    this.engineOsc.frequency.value = 55;
+    this.engineGain = this.ctx.createGain();
+    this.engineGain.gain.value = 0;
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.value = 420;
+    this.engineOsc.connect(filter);
+    filter.connect(this.engineGain);
+    this.engineGain.connect(this.master);
+    this.engineOsc.start();
+  }
+
+  // Siren: a sine that alternates between two tones.
+  buildSirenVoice() {
+    this.sirenOsc = this.ctx.createOscillator();
+    this.sirenOsc.type = 'sine';
+    this.sirenOsc.frequency.value = 780;
+    this.sirenGain = this.ctx.createGain();
+    this.sirenGain.gain.value = 0;
+    this.sirenOsc.connect(this.sirenGain);
+    this.sirenGain.connect(this.master);
+    this.sirenOsc.start();
+  }
+
+  // Ambient pad: two detuned triangles, very quiet, always on.
+  buildPadVoice() {
+    this.padOsc = this.ctx.createOscillator();
+    this.padOsc.type = 'triangle';
+    this.padOsc.frequency.value = 110;
+    const second = this.ctx.createOscillator();
+    second.type = 'triangle';
+    second.frequency.value = 164.8;
+    this.padGain = this.ctx.createGain();
+    this.padGain.gain.value = 0.02;
+    this.padOsc.connect(this.padGain);
+    second.connect(this.padGain);
+    this.padGain.connect(this.master);
+    this.padOsc.start();
+    second.start();
   }
 
   engine(speed01, driving) {
@@ -142,6 +154,7 @@ export class SoundBank {
     }
   }
 
+  // One short oscillator note with a quick decay.
   blip(freq, dur, type, vol) {
     if (!this.ctx) return;
     const t = this.ctx.currentTime;
@@ -157,13 +170,14 @@ export class SoundBank {
     osc.stop(t + dur + 0.02);
   }
 
+  // One burst of filtered noise with a decay.
   noiseBurst(dur, vol, lowpass) {
     if (!this.ctx) return;
     const t = this.ctx.currentTime;
     const len = Math.floor(this.ctx.sampleRate * dur);
     const buffer = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
     const data = buffer.getChannelData(0);
-    for (let i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / len);
+    for (let i = 0; i < len; i += 1) data[i] = (Math.random() * 2 - 1) * (1 - i / len);
     const src = this.ctx.createBufferSource();
     src.buffer = buffer;
     const filter = this.ctx.createBiquadFilter();
@@ -175,6 +189,11 @@ export class SoundBank {
     filter.connect(gain);
     gain.connect(this.master);
     src.start(t);
+  }
+
+  // A little melody: notes scheduled one after another.
+  playNotes(notes, dur, type, vol, gap) {
+    notes.forEach((n, i) => setTimeout(() => this.blip(n, dur, type, vol), i * gap));
   }
 
   shot() {
@@ -240,18 +259,15 @@ export class SoundBank {
   }
 
   jingle() {
-    const notes = [523, 659, 784, 1046];
-    notes.forEach((n, i) => setTimeout(() => this.blip(n, 0.22, 'triangle', 0.28), i * 110));
+    this.playNotes([523, 659, 784, 1046], 0.22, 'triangle', 0.28, 110);
   }
 
   fanfare() {
     // A longer mission-complete fanfare.
-    const notes = [523, 659, 784, 1046, 784, 1046, 1318];
-    notes.forEach((n, i) => setTimeout(() => this.blip(n, 0.24, 'triangle', 0.26), i * 120));
+    this.playNotes([523, 659, 784, 1046, 784, 1046, 1318], 0.24, 'triangle', 0.26, 120);
   }
 
   busted() {
-    const notes = [392, 311, 233];
-    notes.forEach((n, i) => setTimeout(() => this.blip(n, 0.3, 'sawtooth', 0.18), i * 160));
+    this.playNotes([392, 311, 233], 0.3, 'sawtooth', 0.18, 160);
   }
 }

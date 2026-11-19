@@ -1,10 +1,10 @@
-// HelicopterAI — the Solmar Bay PD air unit. v4's headline system: when the
-// player's wanted level reaches four stars, a chopper lifts off, closes in
-// and pins the player in a searchlight cone. While the light is on the
-// player, hiding from ground units does nothing — the only escapes are to
-// break line of sight, reach the safehouse, or shoot the chopper down. The
-// rotor is a third WebAudio voice, the downwash kicks up dust on the street,
-// and pedestrians scatter when the light sweeps over them.
+// HelicopterAI — the Solmar Bay PD air unit. When the player's wanted
+// level reaches four stars, a chopper lifts off, closes in and pins the
+// player in a searchlight cone. While the light is on the player, hiding
+// from ground units does nothing — the only escapes are to break the beam,
+// reach the safehouse, or shoot the chopper down. The rotor is a third
+// WebAudio voice, the downwash kicks up dust on the street, and pedestrians
+// scatter when the light sweeps over them.
 import { CFG } from './config.js';
 
 const ROTOR_WASH_INTERVAL = 0.14;
@@ -37,31 +37,23 @@ export class HelicopterAI {
     const bodyMat = new THREE.MeshLambertMaterial({ color: 0x1d3a6e });
     const darkMat = new THREE.MeshLambertMaterial({ color: 0x101418 });
     const glassMat = new THREE.MeshLambertMaterial({ color: 0x9fd4e8, emissive: 0x1a3a4a });
-    const body = new THREE.Mesh(new THREE.BoxGeometry(3.6, 1.4, 1.8), bodyMat);
-    body.position.y = 0;
-    g.add(body);
-    const nose = new THREE.Mesh(new THREE.BoxGeometry(1.4, 1.0, 1.6), glassMat);
-    nose.position.set(2.2, 0.1, 0);
-    g.add(nose);
-    const boom = new THREE.Mesh(new THREE.BoxGeometry(4.2, 0.5, 0.5), bodyMat);
-    boom.position.set(-3.6, 0.4, 0);
-    g.add(boom);
-    const fin = new THREE.Mesh(new THREE.BoxGeometry(0.3, 1.6, 0.9), darkMat);
-    fin.position.set(-5.6, 1.0, 0);
-    g.add(fin);
+    const box = (mat, w, h, d, x, y, z) => {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+      m.position.set(x, y, z);
+      g.add(m);
+      return m;
+    };
+    box(bodyMat, 3.6, 1.4, 1.8, 0, 0, 0);
+    box(glassMat, 1.4, 1.0, 1.6, 2.2, 0.1, 0);
+    box(bodyMat, 4.2, 0.5, 0.5, -3.6, 0.4, 0);
+    box(darkMat, 0.3, 1.6, 0.9, -5.6, 1.0, 0);
     const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 0.8, 8), darkMat);
     mast.position.y = 1.0;
     g.add(mast);
-    this.rotor = new THREE.Mesh(new THREE.BoxGeometry(9.5, 0.08, 0.5), darkMat);
-    this.rotor.position.y = 1.45;
-    g.add(this.rotor);
-    this.tailRotor = new THREE.Mesh(new THREE.BoxGeometry(0.08, 2.2, 0.3), darkMat);
-    this.tailRotor.position.set(-5.6, 0.6, 0.5);
-    g.add(this.tailRotor);
+    this.rotor = box(darkMat, 9.5, 0.08, 0.5, 0, 1.45, 0);
+    this.tailRotor = box(darkMat, 0.08, 2.2, 0.3, -5.6, 0.6, 0.5);
     for (const z of [-0.8, 0.8]) {
-      const skid = new THREE.Mesh(new THREE.BoxGeometry(3.0, 0.12, 0.12), darkMat);
-      skid.position.set(0, -1.0, z);
-      g.add(skid);
+      box(darkMat, 3.0, 0.12, 0.12, 0, -1.0, z);
     }
     const lamp = new THREE.Mesh(
       new THREE.SphereGeometry(0.28, 10, 8),
@@ -167,9 +159,19 @@ export class HelicopterAI {
       return;
     }
     const p = world.player.inCar ? world.player.inCar.pos : world.player.pos;
-    const safe = this.sheltering(world);
-    // Orbit the player, closing in fast from far away, holding a loose
-    // circle once overhead.
+    this.track(dt, p);
+    this.aimLight(dt, world, p);
+    // Downwash: dust puffs on the street below, on a short timer.
+    this.washTimer -= dt;
+    if (this.washTimer <= 0) {
+      this.washTimer = ROTOR_WASH_INTERVAL;
+      world.effects.rotorWash(new THREE.Vector3(this.pos.x, 0, this.pos.z));
+    }
+  }
+
+  // Orbit the player, closing in fast from far away, holding a loose
+  // circle once overhead.
+  track(dt, p) {
     this.orbitAngle += CFG.heliOrbitSpeed * dt;
     const dist = Math.hypot(this.pos.x - p.x, this.pos.z - p.z);
     const tx = p.x + Math.cos(this.orbitAngle) * 12;
@@ -186,32 +188,41 @@ export class HelicopterAI {
     this.group.rotation.y = Math.atan2(-(p.z - this.pos.z), p.x - this.pos.x);
     this.rotor.rotation.y += dt * 28;
     this.tailRotor.rotation.x += dt * 40;
+  }
+
+  // The spotlight tracks the player while they are out in the open; once
+  // they break the beam it sweeps the last place they were seen.
+  aimLight(dt, world, p) {
     world.sound.rotor(true, dt);
-    // The spotlight tracks the player while they are out in the open; once
-    // they break the beam it sweeps the last place they were seen.
     const close = Math.hypot(p.x - this.pos.x, p.z - this.pos.z) < CFG.heliSpotRadius;
-    if (close && !safe) {
-      this.litPlayer = true;
-      this.searchTimer = CFG.heliSearchSeconds;
-      this.lastKnown.set(p.x, 0, p.z);
-      // Local space: the chopper sits at +altitude, so the ground target is
-      // one altitude below it, offset toward the player.
-      this.spotTarget.position.set(p.x - this.pos.x, -CFG.heliAltitude, p.z - this.pos.z);
-    } else {
-      this.litPlayer = false;
-      if (this.searchTimer > 0) this.searchTimer -= dt;
-      const sweep = performance.now() / 1000 * 0.8;
-      this.spotTarget.position.set(
-        this.lastKnown.x - this.pos.x + Math.cos(sweep) * 10,
-        -CFG.heliAltitude,
-        this.lastKnown.z - this.pos.z + Math.sin(sweep) * 10,
-      );
+    if (close && !this.sheltering(world)) {
+      this.lockOnto(p);
+      return;
     }
-    // Downwash: dust puffs on the street below, on a short timer.
-    this.washTimer -= dt;
-    if (this.washTimer <= 0) {
-      this.washTimer = ROTOR_WASH_INTERVAL;
-      world.effects.rotorWash(new THREE.Vector3(this.pos.x, 0, this.pos.z));
-    }
+    this.sweepLastKnown(dt);
+  }
+
+  // Beam locked: the light sits on the player and the crew remembers
+  // exactly where they are.
+  lockOnto(p) {
+    this.litPlayer = true;
+    this.searchTimer = CFG.heliSearchSeconds;
+    this.lastKnown.set(p.x, 0, p.z);
+    // Local space: the chopper sits at +altitude, so the ground target
+    // is one altitude below it, offset toward the player.
+    this.spotTarget.position.set(p.x - this.pos.x, -CFG.heliAltitude, p.z - this.pos.z);
+  }
+
+  // Beam lost: sweep the last known position in a slow circle while the
+  // search timer runs down.
+  sweepLastKnown(dt) {
+    this.litPlayer = false;
+    if (this.searchTimer > 0) this.searchTimer -= dt;
+    const sweep = performance.now() / 1000 * 0.8;
+    this.spotTarget.position.set(
+      this.lastKnown.x - this.pos.x + Math.cos(sweep) * 10,
+      -CFG.heliAltitude,
+      this.lastKnown.z - this.pos.z + Math.sin(sweep) * 10,
+    );
   }
 }

@@ -1,5 +1,5 @@
-// Solmar Bay: Heatwave v4 — bootstrap, game loop, camera, car enter/exit
-// and the menu / playing / paused / busted / wasted state machine. v4 wires
+// Solmar Bay: Heatwave — bootstrap, game loop, camera, car enter/exit
+// and the menu / playing / paused / busted / wasted state machine. Wires
 // in the helicopter that hunts the player at four stars, the procedural
 // radio, Rico's garage with its buy/sell/choose panel, the safehouse rest,
 // two more story missions, and the presentation polish (cash popups, wanted
@@ -76,8 +76,8 @@ world.combat = new Combat(scene);
 world.missions = new Missions(scene, landmarks);
 world.side = new SideActivities(scene, landmarks, rng);
 world.crime = new CrimeSystem(scene, landmarks, rng);
-// v4 systems: the air unit, the radio and the garage — built after the
-// crime system, before the save, so loading can restore the garage.
+// The air unit, the radio and the garage — built after the crime system,
+// before the save, so loading can restore the garage.
 world.heli = new HelicopterAI(scene);
 world.radio = new RadioSystem(world.sound);
 world.garage = new GarageSystem(scene, landmarks, CFG.seed);
@@ -265,6 +265,138 @@ function updateCamera(dt) {
   camera.lookAt(look);
 }
 
+// --- Per-frame input --------------------------------------------------------
+// E does one thing per press: talk to a mission contact first, then rob the
+// ATM at the bank, then enter or exit a car. The talk takes priority, so a
+// press next to a contact never just opens a car door — on foot or from the
+// driver's seat.
+function handleInteract() {
+  const p = world.player;
+  const input = world.input;
+  const step = world.missions.currentStep();
+  const isTalk = step && step.type === 'talk' && step.target;
+  let nearTalk = false;
+  if (isTalk) {
+    const pp = p.inCar ? p.inCar.pos : p.pos;
+    nearTalk = Math.hypot(pp.x - step.target.x, pp.z - step.target.z) < step.radius;
+  }
+  const nearAtm = !p.inCar && Math.hypot(p.pos.x - world.crime.atmPos.x, p.pos.z - world.crime.atmPos.z) < 4;
+  if (nearAtm) world.hud.setPrompt('Press E — rob the ATM (+$250, +2 wanted)');
+  if (nearTalk) return; // the E press is left for missions.update to consume
+  // One E press, routed once: the ATM first, then a car.
+  const ePressed = input.consume('KeyE');
+  if (ePressed && nearAtm && world.crime.robAtm(world)) {
+    // Robbed — the press is spent.
+  } else if (ePressed && !p.inCar) {
+    const nearCar = nearestCar(3.4);
+    if (nearCar) world.enterCar(nearCar, false);
+  } else if (ePressed && p.inCar) {
+    world.exitCar();
+  }
+}
+
+// Combat on foot: punch, shoot (auto-fire for the SMG), reload, weapons.
+function handleFootCombat() {
+  const p = world.player;
+  const input = world.input;
+  if (p.inCar) return;
+  const wk = input.weaponKey();
+  if (wk) world.combat.switchWeapon(wk, world);
+  if (input.consume('KeyQ')) world.combat.cycleWeapon(world);
+  if (input.held('Mouse0') || input.consume('KeyF')) world.combat.tryPunch(world);
+  if (world.combat.def.auto) {
+    if (input.held('Mouse2') || input.held('KeyG')) world.combat.tryShoot(world);
+  } else if (input.consume('KeyG') || input.consume('Mouse2')) {
+    world.combat.tryShoot(world);
+  }
+  if (input.consume('KeyR')) world.combat.reload(world);
+}
+
+function handleDriving(dt) {
+  const p = world.player;
+  const input = world.input;
+  if (!p.inCar) return;
+  const car = p.inCar;
+  const axes = input.moveAxes();
+  const throttle = axes.y;
+  const steerInput = axes.x;
+  const res = car.drive(throttle, -steerInput, dt, colliders, world.allCars);
+  if (res && res.crashed) {
+    world.sound.crash();
+    // The camera shake scales with the impact — a tap shudders, a 30 km/h
+    // wall hit rattles the whole frame.
+    world.shake = Math.min(1.2, 0.25 + res.impact * 0.03);
+    world.effects.sparks(car.pos.clone().setY(1));
+    p.damage(2);
+  }
+  // A drift lays down thick smoke and sparks at the rear wheels.
+  if (car.drifting) {
+    const back = car.pos.clone().addScaledVector(car.forward, -1.8);
+    world.effects.driftSmoke(back);
+    if (Math.random() < 0.4) world.sound.skid();
+  }
+  // Hard cornering or braking at speed lays down tyre smoke.
+  if (Math.abs(car.speed) > 14 && (Math.abs(steerInput) > 0.7 || (throttle < 0 && car.speed > 10))) {
+    const back = car.pos.clone().addScaledVector(car.forward, -1.8);
+    world.effects.skid(back);
+    if (Math.random() < 0.25) world.sound.skid();
+  }
+  // Horn: honk, and nearby pedestrians scatter.
+  if (input.consume('KeyH')) {
+    world.sound.horn();
+    for (const ped of world.peds.list) {
+      if (Math.hypot(ped.pos.x - car.pos.x, ped.pos.z - car.pos.z) < 15) ped.flee = 2;
+    }
+  }
+  if (world.peds.hitByCar(car.pos, Math.abs(car.speed))) {
+    world.police.addWanted(1, world);
+    world.hud.flashMessage('You hit a pedestrian! +1 wanted star');
+    world.sound.crash();
+  }
+  world.sound.engine(Math.abs(car.speed) / car.tune.topSpeed, true);
+}
+
+function handleOnFoot(dt) {
+  const p = world.player;
+  const input = world.input;
+  if (p.inCar) return;
+  world.sound.engine(0, false);
+  p.update(dt, input, world.camYaw, colliders, world.allCars);
+  const car = nearestCar(3.4);
+  if (car) {
+    // The player's own garage car is never a theft — just a ride.
+    const prompt = car.garageOwned ? `Press E — get in (your ${car.label})`
+      : car.stolen || !car.parked ? `Press E — get in (${car.label})`
+      : `Press E — steal ${car.label}`;
+    world.hud.setPrompt(prompt);
+  }
+}
+
+function stepSim(dt) {
+  const p = world.player;
+  for (const car of world.traffic) {
+    if (car.alive && !car.isPlayer) car.driveTraffic(dt, colliders, world.allCars);
+  }
+  world.peds.update(dt, world);
+  world.police.update(dt, world);
+  world.combat.update(dt, world);
+  world.missions.update(dt, world);
+  world.side.update(dt, world);
+  world.crime.update(dt, world);
+  // The v4 systems, after the world they react to has moved.
+  world.heli.update(dt, world);
+  world.radio.update(dt);
+  world.garage.update(dt, world);
+  world.effects.update(dt);
+  if (world.gunshotTimer > 0) world.gunshotTimer -= dt;
+  if (p.health <= 0) endGame('wasted');
+  else if (world.police.busted) {
+    world.police.busted = false;
+    endGame('busted');
+  }
+  if (p.health < CFG.playerHealth && world.police.wanted === 0) p.heal(dt * 2);
+}
+
 // --- Main loop --------------------------------------------------------------
 let last = performance.now();
 let firstFrame = true;
@@ -274,7 +406,6 @@ function frame(now) {
   const dt = Math.min(0.05, (now - last) / 1000);
   last = now;
   const input = world.input;
-  const p = world.player;
   const t = now / 1000;
   city.animate(dt, t);
 
@@ -287,118 +418,11 @@ function frame(now) {
     // V cycles the radio station; B opens Rico's garage at the garage.
     if (input.consume('KeyV')) world.radio.cycle(world);
     if (input.consume('KeyB')) world.garage.togglePanel(world);
-    // E does one thing per press: talk to a mission contact first, then
-    // rob the ATM at the bank, then enter or exit a car. The talk takes
-    // priority, so a press next to a contact never just opens a car door —
-    // on foot or from the driver's seat.
-    const step = world.missions.currentStep();
-    const isTalk = step && step.type === 'talk' && step.target;
-    let nearTalk = false;
-    if (isTalk) {
-      const pp = p.inCar ? p.inCar.pos : p.pos;
-      nearTalk = Math.hypot(pp.x - step.target.x, pp.z - step.target.z) < step.radius;
-    }
-    const nearAtm = !p.inCar && Math.hypot(p.pos.x - world.crime.atmPos.x, p.pos.z - world.crime.atmPos.z) < 4;
-    if (nearAtm) world.hud.setPrompt('Press E — rob the ATM (+$250, +2 wanted)');
-    if (!nearTalk) {
-      // One E press, routed once: the ATM first, then a car.
-      const ePressed = input.consume('KeyE');
-      if (ePressed && nearAtm && world.crime.robAtm(world)) {
-        // Robbed — the press is spent.
-      } else if (ePressed && !p.inCar) {
-        const nearCar = nearestCar(3.4);
-        if (nearCar) world.enterCar(nearCar, false);
-      } else if (ePressed && p.inCar) {
-        world.exitCar();
-      }
-    }
-    // When nearTalk, the E press is left for missions.update to consume.
-    // Combat on foot: punch, shoot (auto-fire for the SMG), reload, weapons.
-    if (!p.inCar) {
-      const wk = input.weaponKey();
-      if (wk) world.combat.switchWeapon(wk, world);
-      if (input.consume('KeyQ')) world.combat.cycleWeapon(world);
-      if (input.held('Mouse0') || input.consume('KeyF')) world.combat.tryPunch(world);
-      if (world.combat.def.auto) {
-        if (input.held('Mouse2') || input.held('KeyG')) world.combat.tryShoot(world);
-      } else if (input.consume('KeyG') || input.consume('Mouse2')) {
-        world.combat.tryShoot(world);
-      }
-      if (input.consume('KeyR')) world.combat.reload(world);
-    }
-    // Driving.
-    if (p.inCar) {
-      const car = p.inCar;
-      const axes = input.moveAxes();
-      const throttle = axes.y;
-      const steerInput = axes.x;
-      const res = car.drive(throttle, -steerInput, dt, colliders, world.allCars);
-      if (res && res.crashed) {
-        world.sound.crash();
-        // The camera shake scales with the impact — a tap shudders, a
-        // 30 km/h wall hit rattles the whole frame.
-        world.shake = Math.min(1.2, 0.25 + res.impact * 0.03);
-        world.effects.sparks(car.pos.clone().setY(1));
-        p.damage(2);
-      }
-      // A drift lays down thick smoke and sparks at the rear wheels.
-      if (car.drifting) {
-        const back = car.pos.clone().addScaledVector(car.forward, -1.8);
-        world.effects.driftSmoke(back);
-        if (Math.random() < 0.4) world.sound.skid();
-      }
-      // Hard cornering or braking at speed lays down tyre smoke.
-      if (Math.abs(car.speed) > 14 && (Math.abs(steerInput) > 0.7 || (throttle < 0 && car.speed > 10))) {
-        const back = car.pos.clone().addScaledVector(car.forward, -1.8);
-        world.effects.skid(back);
-        if (Math.random() < 0.25) world.sound.skid();
-      }
-      // Horn: honk, and nearby pedestrians scatter.
-      if (input.consume('KeyH')) {
-        world.sound.horn();
-        for (const ped of world.peds.list) {
-          if (Math.hypot(ped.pos.x - car.pos.x, ped.pos.z - car.pos.z) < 15) ped.flee = 2;
-        }
-      }
-      if (world.peds.hitByCar(car.pos, Math.abs(car.speed))) {
-        world.police.addWanted(1, world);
-        world.hud.flashMessage('You hit a pedestrian! +1 wanted star');
-        world.sound.crash();
-      }
-      world.sound.engine(Math.abs(car.speed) / car.tune.topSpeed, true);
-    } else {
-      world.sound.engine(0, false);
-      p.update(dt, input, world.camYaw, colliders, world.allCars);
-      const car = nearestCar(3.4);
-      if (car) {
-        // The player's own garage car is never a theft — just a ride.
-        const prompt = car.garageOwned ? `Press E — get in (your ${car.label})`
-          : car.stolen || !car.parked ? `Press E — get in (${car.label})`
-          : `Press E — steal ${car.label}`;
-        world.hud.setPrompt(prompt);
-      }
-    }
-    for (const car of world.traffic) {
-      if (car.alive && !car.isPlayer) car.driveTraffic(dt, colliders, world.allCars);
-    }
-    world.peds.update(dt, world);
-    world.police.update(dt, world);
-    world.combat.update(dt, world);
-    world.missions.update(dt, world);
-    world.side.update(dt, world);
-    world.crime.update(dt, world);
-    // v4 systems, after the world they react to has moved.
-    world.heli.update(dt, world);
-    world.radio.update(dt);
-    world.garage.update(dt, world);
-    world.effects.update(dt);
-    if (world.gunshotTimer > 0) world.gunshotTimer -= dt;
-    if (p.health <= 0) endGame('wasted');
-    else if (world.police.busted) {
-      world.police.busted = false;
-      endGame('busted');
-    }
-    if (p.health < CFG.playerHealth && world.police.wanted === 0) p.heal(dt * 2);
+    handleInteract();
+    handleFootCombat();
+    handleDriving(dt);
+    handleOnFoot(dt);
+    stepSim(dt);
     updateCamera(dt);
     world.hud.update(dt, world);
   } else if (world.state === 'menu' || world.state === 'end' || world.state === 'paused') {
@@ -441,108 +465,112 @@ if (shot) {
 }
 
 // Debug / play-test hook (used by the automated play-test only).
-window.__solmar = {
-  world,
-  get state() { return world.state; },
-  get player() {
-    const p = world.player;
-    const pos = p.inCar ? p.inCar.pos : p.pos;
-    return {
-      x: pos.x, z: pos.z, health: p.health, cash: p.cash,
-      inCar: !!p.inCar, speed: p.inCar ? p.inCar.speed : p.speed,
-      vehicle: p.inCar ? p.inCar.type : null,
-      stamina: p.stamina,
-    };
-  },
-  get wanted() { return world.police.wanted; },
-  get mission() {
-    const m = world.missions;
-    return {
-      index: m.index, step: m.step, done: m.done, total: m.defs.length,
-      text: m.objectiveText(), timer: m.timer,
-    };
-  },
-  get enemiesLeft() { return world.combat.enemiesLeft(); },
-  get side() {
-    const s = world.side;
-    return {
-      collected: s.collected.size, total: CFG.collectibleCount,
-      taxi: s.taxi.state, taxiBest: s.taxiBest, taxiRuns: s.taxiRuns,
-      race: s.race.state, raceBest: s.raceBest, raceRuns: s.raceRuns,
-    };
-  },
-  get weapon() { return world.combat.weapon; },
-  get unlocked() { return { ...world.combat.unlocked }; },
-  // v4 hooks: radio, helicopter and garage state for the play-test.
-  get radio() {
-    return { on: world.radio.on, station: world.radio.stationName(), index: world.radio.index };
-  },
-  get heli() {
-    return {
-      active: world.heli.active, hp: world.heli.hp,
-      lit: world.heli.spotlightOnPlayer(),
-      x: world.heli.pos.x, z: world.heli.pos.z,
-    };
-  },
-  get garage() {
-    return {
-      owned: [...world.garage.owned], activeId: world.garage.activeId,
-      dealId: world.garage.dealId, panelOpen: world.garage.panelOpen,
-    };
-  },
-  buyVehicle: (id) => world.garage.buy(id, world),
-  selectVehicle: (id) => world.garage.select(id, world),
-  sellVehicle: (id) => world.garage.sell(id, world),
-  openGarage: () => world.garage.openPanel(world),
-  setStation: (i) => { world.radio.index = i % 3; },
-  start: (cont) => startGame(!!cont),
-  teleport: (x, z) => {
-    const p = world.player;
-    if (p.inCar) { p.inCar.pos.set(x, 0, z); p.inCar.syncMesh(0); }
-    p.pos.set(x, 0, z);
-    p.mesh.position.copy(p.pos);
-  },
-  enterNearestCar: () => {
-    const car = nearestCar(6);
-    if (car) world.enterCar(car, true);
-    return !!car;
-  },
-  enterSportsCar: () => {
-    const car = world.marinaSports;
-    if (!car) return false;
-    world.player.pos.set(car.pos.x + 2, 0, car.pos.z);
-    world.enterCar(car, true);
-    return true;
-  },
-  setWanted: (n) => { world.police.wanted = n; world.police.syncCars(world); },
-  startTaxi: () => world.side.startTaxi(world),
-  startRace: () => world.side.startRace(world, false),
-  collectiblePos: (id) => {
-    const g = world.side.collectibleMeshes.get(id);
-    return g ? { x: g.position.x, z: g.position.z } : null;
-  },
-  collectibleIds: () => [...world.side.collectibleMeshes.keys()],
-  // v3 hooks: the day/night clock, the ATM, the crime system, drift and crouch.
-  setDayFrac: (f) => world.city.setDayFrac(f),
-  robAtm: () => world.crime.robAtm(world),
-  forceCrime: (type) => world.crime.forceCrime(type, world),
-  clearCrime: () => world.crime.clearCrime(world),
-  get crime() {
-    const c = world.crime;
-    return {
-      active: !!c.event, type: c.event ? c.event.type : null,
-      interventions: c.interventions, eventsSeen: c.eventsSeen,
-    };
-  },
-  crimePos: () => {
-    const pos = world.crime.eventPos();
-    return pos ? { x: pos.x, z: pos.z } : null;
-  },
-  get drifting() {
-    const car = world.player.inCar;
-    return { drifting: !!(car && car.drifting), speed: car ? Math.abs(car.speed) : 0 };
-  },
-  crouch: (on) => { world.player.crouchForced = !!on; return world.player.crouchForced; },
-};
+window.__solmar = buildDebugHooks(world);
+
+function buildDebugHooks(w) {
+  return {
+    world: w,
+    get state() { return w.state; },
+    get player() {
+      const p = w.player;
+      const pos = p.inCar ? p.inCar.pos : p.pos;
+      return {
+        x: pos.x, z: pos.z, health: p.health, cash: p.cash,
+        inCar: !!p.inCar, speed: p.inCar ? p.inCar.speed : p.speed,
+        vehicle: p.inCar ? p.inCar.type : null,
+        stamina: p.stamina,
+      };
+    },
+    get wanted() { return w.police.wanted; },
+    get mission() {
+      const m = w.missions;
+      return {
+        index: m.index, step: m.step, done: m.done, total: m.defs.length,
+        text: m.objectiveText(), timer: m.timer,
+      };
+    },
+    get enemiesLeft() { return w.combat.enemiesLeft(); },
+    get side() {
+      const s = w.side;
+      return {
+        collected: s.collected.size, total: CFG.collectibleCount,
+        taxi: s.taxi.state, taxiBest: s.taxiBest, taxiRuns: s.taxiRuns,
+        race: s.race.state, raceBest: s.raceBest, raceRuns: s.raceRuns,
+      };
+    },
+    get weapon() { return w.combat.weapon; },
+    get unlocked() { return { ...w.combat.unlocked }; },
+    // Radio, helicopter and garage state for the play-test.
+    get radio() {
+      return { on: w.radio.on, station: w.radio.stationName(), index: w.radio.index };
+    },
+    get heli() {
+      return {
+        active: w.heli.active, hp: w.heli.hp,
+        lit: w.heli.spotlightOnPlayer(),
+        x: w.heli.pos.x, z: w.heli.pos.z,
+      };
+    },
+    get garage() {
+      return {
+        owned: [...w.garage.owned], activeId: w.garage.activeId,
+        dealId: w.garage.dealId, panelOpen: w.garage.panelOpen,
+      };
+    },
+    buyVehicle: (id) => w.garage.buy(id, w),
+    selectVehicle: (id) => w.garage.select(id, w),
+    sellVehicle: (id) => w.garage.sell(id, w),
+    openGarage: () => w.garage.openPanel(w),
+    setStation: (i) => { w.radio.index = i % 3; },
+    start: (cont) => startGame(!!cont),
+    teleport: (x, z) => {
+      const p = w.player;
+      if (p.inCar) { p.inCar.pos.set(x, 0, z); p.inCar.syncMesh(0); }
+      p.pos.set(x, 0, z);
+      p.mesh.position.copy(p.pos);
+    },
+    enterNearestCar: () => {
+      const car = nearestCar(6);
+      if (car) w.enterCar(car, true);
+      return !!car;
+    },
+    enterSportsCar: () => {
+      const car = w.marinaSports;
+      if (!car) return false;
+      w.player.pos.set(car.pos.x + 2, 0, car.pos.z);
+      w.enterCar(car, true);
+      return true;
+    },
+    setWanted: (n) => { w.police.wanted = n; w.police.syncCars(w); },
+    startTaxi: () => w.side.startTaxi(w),
+    startRace: () => w.side.startRace(w, false),
+    collectiblePos: (id) => {
+      const g = w.side.collectibleMeshes.get(id);
+      return g ? { x: g.position.x, z: g.position.z } : null;
+    },
+    collectibleIds: () => [...w.side.collectibleMeshes.keys()],
+    // The day/night clock, the ATM, the crime system, drift and crouch.
+    setDayFrac: (f) => w.city.setDayFrac(f),
+    robAtm: () => w.crime.robAtm(w),
+    forceCrime: (type) => w.crime.forceCrime(type, w),
+    clearCrime: () => w.crime.clearCrime(w),
+    get crime() {
+      const c = w.crime;
+      return {
+        active: !!c.event, type: c.event ? c.event.type : null,
+        interventions: c.interventions, eventsSeen: c.eventsSeen,
+      };
+    },
+    crimePos: () => {
+      const pos = w.crime.eventPos();
+      return pos ? { x: pos.x, z: pos.z } : null;
+    },
+    get drifting() {
+      const car = w.player.inCar;
+      return { drifting: !!(car && car.drifting), speed: car ? Math.abs(car.speed) : 0 };
+    },
+    crouch: (on) => { w.player.crouchForced = !!on; return w.player.crouchForced; },
+  };
+}
 
 requestAnimationFrame(frame);

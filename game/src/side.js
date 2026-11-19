@@ -1,8 +1,8 @@
-// Side activities v4: the things that make Solmar Bay worth roaming when no
+// Side activities: the things that make Solmar Bay worth roaming when no
 // mission is live — a taxi run, a hidden collectible hunt and a checkpoint
 // street race. All three are repeatable, pay cash, and save their best
-// results. Interact with T; collectibles are picked up by walking over them.
-// v4: a taxi fare in a car bought from Rico's garage pays $25 extra.
+// results. Interact with T; collectibles are picked up by walking over
+// them. A taxi fare in a car bought from Rico's garage pays $25 extra.
 import { CFG } from './config.js';
 
 const COLLECTIBLE_SPOTS = [
@@ -165,28 +165,46 @@ export class SideActivities {
   // --- Frame update ---------------------------------------------------------
   update(dt, world) {
     const p = world.player.inCar ? world.player.inCar.pos : world.player.pos;
-    // Collectibles spin; pick one up by walking over it.
+    this.stepCoins(dt, world, p);
+    this.stepTaxi(dt, world, p);
+    this.stepRace(dt, world, p);
+    // Idle: offer a taxi or a race when the player is near the garage.
+    if (this.taxi.state === 'idle' && this.race.state === 'idle' && !world.missions.done) {
+      const g = this.landmarks.garage;
+      if (g && Math.hypot(p.x - g.x, p.z - g.z) < 12) {
+        world.hud.setPrompt('Press T — taxi fare · hold Shift+T — street race');
+        if (world.input.consume('KeyT')) {
+          if (world.input.held('ShiftLeft') || world.input.held('ShiftRight')) this.startRace(world, false);
+          else this.startTaxi(world);
+        }
+      }
+    }
+  }
+
+  // Collectibles spin; pick one up by walking over it.
+  stepCoins(dt, world, p) {
     const t = performance.now() / 1000;
     for (const [id, g] of this.collectibleMeshes) {
       if (this.collected.has(id)) continue;
       g.children[0].rotation.y = t * 1.6;
       g.children[0].position.y = 1.4 + Math.sin(t * 2 + id.length) * 0.25;
-      if (Math.hypot(p.x - g.position.x, p.z - g.position.z) < 2.2) {
-        this.collected.add(id);
-        g.visible = false;
-        world.player.cash += 50;
-        world.hud.flashMessage(`Solmar coin ${this.collected.size}/${CFG.collectibleCount} — +$50`);
-        world.sound.chime();
-        world.effects.burst(g.position, 0xffc23a, 10, 2.5, 0.6);
-        if (this.collected.size >= CFG.collectibleCount) {
-          world.player.cash += 500;
-          world.hud.showBanner('COLLECTOR', 'All 10 Solmar coins found — bonus +$500!');
-          world.sound.jingle();
-        }
-        world.save.save();
+      if (Math.hypot(p.x - g.position.x, p.z - g.position.z) >= 2.2) continue;
+      this.collected.add(id);
+      g.visible = false;
+      world.player.cash += 50;
+      world.hud.flashMessage(`Solmar coin ${this.collected.size}/${CFG.collectibleCount} — +$50`);
+      world.sound.chime();
+      world.effects.burst(g.position, 0xffc23a, 10, 2.5, 0.6);
+      if (this.collected.size >= CFG.collectibleCount) {
+        world.player.cash += 500;
+        world.hud.showBanner('COLLECTOR', 'All 10 Solmar coins found — bonus +$500!');
+        world.sound.jingle();
       }
+      world.save.save();
     }
-    // Taxi.
+  }
+
+  stepTaxi(dt, world, p) {
     if (this.taxi.state === 'pickup') {
       const d = Math.hypot(p.x - this.taxi.passenger.x, p.z - this.taxi.passenger.z);
       if (d < 5) {
@@ -200,85 +218,74 @@ export class SideActivities {
           world.sound.chime();
         }
       }
-    } else if (this.taxi.state === 'deliver') {
-      this.taxi.timer -= dt;
-      if (this.taxi.timer <= 0) {
-        this.taxi.state = 'idle';
-        this.taxiBeacon.visible = false;
-        world.hud.flashMessage('Too slow — the passenger got out and walked.');
-        return;
-      }
-      const d = Math.hypot(p.x - this.taxi.dest.x, p.z - this.taxi.dest.z);
-      if (d < 6) {
-        const spent = CFG.taxiTimeLimit - this.taxi.timer;
-        this.taxiRuns += 1;
-        if (!this.taxiBest || spent < this.taxiBest) this.taxiBest = spent;
-        // v3: a night shift pays a bonus on top of the fare.
-        const night = world.city && world.city.nightness() > 0.5;
-        // v4: a fare in a car bought from Rico's pays $25 extra — the
-        // regulars know a garage car is a clean, fast ride.
-        const ownRide = world.player.inCar && world.player.inCar.garageOwned;
-        const fare = 80 + (night ? CFG.taxiNightBonus : 0) + (ownRide ? 25 : 0);
-        world.player.cash += fare;
-        world.hud.showCashPopup(fare);
-        this.taxi.state = 'idle';
-        this.taxiBeacon.visible = false;
-        world.hud.showBanner('FARE COMPLETE', `+$${fare}${night ? ' (night bonus!)' : ''}${ownRide ? ' (garage ride +$25)' : ''} — ${Math.round(spent)}s (best ${Math.round(this.taxiBest)}s)`);
-        world.sound.jingle();
-        world.save.save();
-      }
+      return;
     }
-    // Race.
-    if (this.race.state === 'racing') {
-      this.race.timer -= dt;
-      if (this.race.timer <= 0) {
-        this.race.state = 'idle';
-        this.raceRings.forEach((r) => { r.ring.visible = false; r.beam.visible = false; });
-        world.hud.showBanner('RACE OVER', 'Out of time — the checkpoints are still there when you are ready.');
-        if (this.race.story) world.missions.failStep(world);
-        return;
-      }
-      const cur = this.raceRings[this.race.index];
-      const d = Math.hypot(p.x - cur.pt.x, p.z - cur.pt.z);
-      if (d < 6) {
-        cur.ring.visible = false;
-        cur.beam.visible = false;
-        world.effects.burst(cur.pt, 0xff5a4a, 12, 3, 0.7);
-        world.sound.chime();
-        this.race.index += 1;
-        if (this.race.index >= this.raceRings.length) {
-          const spent = CFG.raceTimeLimit - this.race.timer;
-          this.raceRuns += 1;
-          if (!this.raceBest || spent < this.raceBest) this.raceBest = spent;
-          const story = this.race.story;
-          this.race.state = 'idle';
-          if (story) {
-            world.missions.advance(world);
-          } else {
-            world.player.cash += 300;
-            world.hud.showBanner('RACE WON', `+$300 — ${Math.round(spent)}s (best ${Math.round(this.raceBest)}s)`);
-            world.sound.jingle();
-          }
-          world.save.save();
-        } else {
-          const next = this.raceRings[this.race.index];
-          next.ring.visible = true;
-          next.beam.visible = true;
-          world.hud.flashMessage(`Checkpoint ${this.race.index + 1} of ${this.raceRings.length} — go!`);
-        }
-      }
+    if (this.taxi.state !== 'deliver') return;
+    this.taxi.timer -= dt;
+    if (this.taxi.timer <= 0) {
+      this.taxi.state = 'idle';
+      this.taxiBeacon.visible = false;
+      world.hud.flashMessage('Too slow — the passenger got out and walked.');
+      return;
     }
-    // Idle: offer a taxi or a race when the player is near the garage.
-    if (this.taxi.state === 'idle' && this.race.state === 'idle' && !world.missions.done) {
-      const g = this.landmarks.garage;
-      if (g && Math.hypot(p.x - g.x, p.z - g.z) < 12) {
-        world.hud.setPrompt('Press T — taxi fare · hold Shift+T — street race');
-        if (world.input.consume('KeyT')) {
-          if (world.input.held('ShiftLeft') || world.input.held('ShiftRight')) this.startRace(world, false);
-          else this.startTaxi(world);
-        }
-      }
+    const d = Math.hypot(p.x - this.taxi.dest.x, p.z - this.taxi.dest.z);
+    if (d >= 6) return;
+    const spent = CFG.taxiTimeLimit - this.taxi.timer;
+    this.taxiRuns += 1;
+    if (!this.taxiBest || spent < this.taxiBest) this.taxiBest = spent;
+    // A night shift pays a bonus on top of the fare.
+    const night = world.city && world.city.nightness() > 0.5;
+    // A fare in a car bought from Rico's pays $25 extra — the regulars
+    // know a garage car is a clean, fast ride.
+    const ownRide = world.player.inCar && world.player.inCar.garageOwned;
+    const fare = 80 + (night ? CFG.taxiNightBonus : 0) + (ownRide ? 25 : 0);
+    world.player.cash += fare;
+    world.hud.showCashPopup(fare);
+    this.taxi.state = 'idle';
+    this.taxiBeacon.visible = false;
+    world.hud.showBanner('FARE COMPLETE', `+$${fare}${night ? ' (night bonus!)' : ''}${ownRide ? ' (garage ride +$25)' : ''} — ${Math.round(spent)}s (best ${Math.round(this.taxiBest)}s)`);
+    world.sound.jingle();
+    world.save.save();
+  }
+
+  stepRace(dt, world, p) {
+    if (this.race.state !== 'racing') return;
+    this.race.timer -= dt;
+    if (this.race.timer <= 0) {
+      this.race.state = 'idle';
+      this.raceRings.forEach((r) => { r.ring.visible = false; r.beam.visible = false; });
+      world.hud.showBanner('RACE OVER', 'Out of time — the checkpoints are still there when you are ready.');
+      if (this.race.story) world.missions.failStep(world);
+      return;
     }
+    const cur = this.raceRings[this.race.index];
+    const d = Math.hypot(p.x - cur.pt.x, p.z - cur.pt.z);
+    if (d >= 6) return;
+    cur.ring.visible = false;
+    cur.beam.visible = false;
+    world.effects.burst(cur.pt, 0xff5a4a, 12, 3, 0.7);
+    world.sound.chime();
+    this.race.index += 1;
+    if (this.race.index < this.raceRings.length) {
+      const next = this.raceRings[this.race.index];
+      next.ring.visible = true;
+      next.beam.visible = true;
+      world.hud.flashMessage(`Checkpoint ${this.race.index + 1} of ${this.raceRings.length} — go!`);
+      return;
+    }
+    const spent = CFG.raceTimeLimit - this.race.timer;
+    this.raceRuns += 1;
+    if (!this.raceBest || spent < this.raceBest) this.raceBest = spent;
+    const story = this.race.story;
+    this.race.state = 'idle';
+    if (story) {
+      world.missions.advance(world);
+    } else {
+      world.player.cash += 300;
+      world.hud.showBanner('RACE WON', `+$300 — ${Math.round(spent)}s (best ${Math.round(this.raceBest)}s)`);
+      world.sound.jingle();
+    }
+    world.save.save();
   }
 
   // --- Save / restore -------------------------------------------------------

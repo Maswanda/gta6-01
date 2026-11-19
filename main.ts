@@ -29,6 +29,13 @@ const index = join(here, 'game', 'index.html');
 if (!existsSync(index) || statSync(index).size === 0) throw new Error('game/index.html is missing');
 const shots = existsSync(join(here, 'screenshots')) ? readdirSync(join(here, 'screenshots')) : [];
 if (shots.length < 3 || shots.length > 4) throw new Error(`expected 3 or 4 screenshots, found ${shots.length}`);
+// Each screenshot must be a real file under the scorer's 256 KiB cap —
+// an empty or oversized frame is a hand-in the scorer would refuse.
+for (const name of shots) {
+  const size = statSync(join(here, 'screenshots', name)).size;
+  if (size === 0) throw new Error(`screenshot ${name} is empty`);
+  if (size > 262144) throw new Error(`screenshot ${name} is ${size} bytes, over the 256 KiB cap`);
+}
 
 mkdirSync(out, { recursive: true });
 cpSync(join(here, 'game'), join(out, 'game'), { recursive: true });

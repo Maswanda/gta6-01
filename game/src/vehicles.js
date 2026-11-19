@@ -9,84 +9,84 @@ import { collideCircle } from './city.js';
 
 const CAR_COLORS = [0xc23b2e, 0x2e6fc2, 0xe8c33a, 0x3aa84f, 0xe8e4da, 0x22242a, 0x7a4fc2, 0xd06a2e];
 
+// Body specs per type: [width, height, depth, x, y, z, material] for the
+// main body, the cabin and any extra part, plus the four wheel spots.
+function bodySpec(type) {
+  if (type === 'sports') {
+    return {
+      parts: [
+        ['box', 1.9, 0.5, 4.6, 0, 0.5, 0, 'paint'],
+        ['box', 1.5, 0.42, 1.9, 0, 0.95, -0.3, 'glass'],
+        ['box', 1.8, 0.1, 0.4, 0, 0.95, -2.1, 'tyre'],
+      ],
+      wheels: [[-0.9, 1.5], [0.9, 1.5], [-0.9, -1.5], [0.9, -1.5]],
+    };
+  }
+  if (type === 'van') {
+    return {
+      parts: [
+        ['box', 2.1, 1.5, 4.6, 0, 1.05, 0, 'paint'],
+        ['box', 1.9, 0.6, 1.2, 0, 1.5, 1.7, 'glass'],
+      ],
+      wheels: [[-0.95, 1.5], [0.95, 1.5], [-0.95, -1.5], [0.95, -1.5]],
+    };
+  }
+  if (type === 'muscle') {
+    return {
+      parts: [
+        ['box', 2.0, 0.6, 4.8, 0, 0.55, 0, 'paint'],
+        ['box', 0.7, 0.22, 1.0, 0, 0.95, 1.2, 'tyre'],
+        ['box', 0.5, 0.04, 4.82, 0, 0.87, 0, 'stripe'],
+        ['box', 1.6, 0.5, 2.0, 0, 1.05, -0.4, 'glass'],
+      ],
+      wheels: [[-0.95, 1.6], [0.95, 1.6], [-1.0, -1.6], [1.0, -1.6]],
+    };
+  }
+  if (type === 'truck') {
+    return {
+      parts: [
+        ['box', 2.0, 1.3, 1.6, 0, 0.95, 1.4, 'paint'],
+        ['box', 2.0, 0.7, 2.8, 0, 0.65, -0.8, 'paint'],
+        ['box', 1.6, 0.7, 2.2, 0, 1.3, -0.8, 'load'],
+      ],
+      wheels: [[-0.95, 1.6], [0.95, 1.6], [-0.95, -1.6], [0.95, -1.6]],
+    };
+  }
+  return {
+    parts: [
+      ['box', 2.0, 0.62, 4.4, 0, 0.55, 0, 'paint'],
+      ['box', 1.7, 0.55, 2.2, 0, 1.1, -0.2, 'glass'],
+    ],
+    wheels: [[-0.95, 1.45], [0.95, 1.45], [-0.95, -1.45], [0.95, -1.45]],
+  };
+}
+
 export function makeCarMesh(color, isPolice, type) {
   const g = new THREE.Group();
   const paint = new THREE.MeshLambertMaterial({ color });
   const glass = new THREE.MeshLambertMaterial({ color: 0x18222e });
   const tyre = new THREE.MeshLambertMaterial({ color: 0x141518 });
+  const mats = {
+    paint,
+    glass,
+    tyre,
+    stripe: new THREE.MeshLambertMaterial({ color: 0x141518 }),
+    load: new THREE.MeshLambertMaterial({ color: 0x8a6a48 }),
+  };
+  const spec = bodySpec(type);
+  for (const [, w, h, d, x, y, z, mat] of spec.parts) {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mats[mat]);
+    m.position.set(x, y, z);
+    g.add(m);
+  }
   const wheelGeo = new THREE.CylinderGeometry(0.36, 0.36, 0.3, 10);
   wheelGeo.rotateZ(Math.PI / 2);
   const wheels = [];
-  const addWheel = (x, z) => {
+  for (const [wx, wz] of spec.wheels) {
     const w = new THREE.Mesh(wheelGeo, tyre);
-    w.position.set(x, 0.36, z);
+    w.position.set(wx, 0.36, wz);
     g.add(w);
     wheels.push(w);
-  };
-  if (type === 'sports') {
-    // Low, sleek, with a spoiler.
-    const body = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.5, 4.6), paint);
-    body.position.y = 0.5;
-    g.add(body);
-    const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.42, 1.9), glass);
-    cabin.position.set(0, 0.95, -0.3);
-    g.add(cabin);
-    const spoiler = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.1, 0.4), tyre);
-    spoiler.position.set(0, 0.95, -2.1);
-    g.add(spoiler);
-    for (const [wx, wz] of [[-0.9, 1.5], [0.9, 1.5], [-0.9, -1.5], [0.9, -1.5]]) addWheel(wx, wz);
-  } else if (type === 'van') {
-    // Tall box, sliding-door van.
-    const body = new THREE.Mesh(new THREE.BoxGeometry(2.1, 1.5, 4.6), paint);
-    body.position.y = 1.05;
-    g.add(body);
-    const cab = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.6, 1.2), glass);
-    cab.position.set(0, 1.5, 1.7);
-    g.add(cab);
-    for (const [wx, wz] of [[-0.95, 1.5], [0.95, 1.5], [-0.95, -1.5], [0.95, -1.5]]) addWheel(wx, wz);
-  } else if (type === 'muscle') {
-    // Muscle car: a long hood with a scoop, a racing stripe down the
-    // middle, and wide rear wheels. Rico's flagship — garage only.
-    const body = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.6, 4.8), paint);
-    body.position.y = 0.55;
-    g.add(body);
-    const scoop = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.22, 1.0), tyre);
-    scoop.position.set(0, 0.95, 1.2);
-    g.add(scoop);
-    const stripe = new THREE.Mesh(
-      new THREE.BoxGeometry(0.5, 0.04, 4.82),
-      new THREE.MeshLambertMaterial({ color: 0x141518 }),
-    );
-    stripe.position.y = 0.87;
-    g.add(stripe);
-    const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.5, 2.0), glass);
-    cabin.position.set(0, 1.05, -0.4);
-    g.add(cabin);
-    for (const [wx, wz] of [[-0.95, 1.6], [0.95, 1.6], [-1.0, -1.6], [1.0, -1.6]]) addWheel(wx, wz);
-  } else if (type === 'truck') {
-    // Cab up front, open bed behind.
-    const cab = new THREE.Mesh(new THREE.BoxGeometry(2.0, 1.3, 1.6), paint);
-    cab.position.set(0, 0.95, 1.4);
-    g.add(cab);
-    const bed = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.7, 2.8), paint);
-    bed.position.set(0, 0.65, -0.8);
-    g.add(bed);
-    const load = new THREE.Mesh(
-      new THREE.BoxGeometry(1.6, 0.7, 2.2),
-      new THREE.MeshLambertMaterial({ color: 0x8a6a48 }),
-    );
-    load.position.set(0, 1.3, -0.8);
-    g.add(load);
-    for (const [wx, wz] of [[-0.95, 1.6], [0.95, 1.6], [-0.95, -1.6], [0.95, -1.6]]) addWheel(wx, wz);
-  } else {
-    // Sedan: the standard four-door.
-    const body = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.62, 4.4), paint);
-    body.position.y = 0.55;
-    g.add(body);
-    const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.55, 2.2), glass);
-    cabin.position.set(0, 1.1, -0.2);
-    g.add(cabin);
-    for (const [wx, wz] of [[-0.95, 1.45], [0.95, 1.45], [-0.95, -1.45], [0.95, -1.45]]) addWheel(wx, wz);
   }
   if (isPolice) {
     const bar = new THREE.Mesh(
@@ -162,10 +162,10 @@ export class Car {
   drive(throttle, steer, dt, colliders, others) {
     const prev = this.pos.clone();
     const t = this.tune;
-    if (throttle > 0) this.speed += t.accel * throttle * dt;
-    else if (throttle < 0) {
-      if (this.speed > 0.5) this.speed -= t.brake * dt;
-      else this.speed -= t.accel * 0.6 * dt;
+    if (throttle > 0) {
+      this.speed += t.accel * throttle * dt;
+    } else if (throttle < 0) {
+      this.speed -= (this.speed > 0.5 ? t.brake : t.accel * 0.6) * dt;
     } else {
       this.speed -= Math.sign(this.speed) * Math.min(Math.abs(this.speed), 6 * dt);
     }
@@ -229,7 +229,10 @@ export class Car {
       const dz = o.pos.z - this.pos.z;
       const ahead = dx * f.x + dz * f.z;
       const side = Math.abs(dx * f.z - dz * f.x);
-      if (ahead > 0 && ahead < 9 && side < 2.4) { clear = false; break; }
+      if (ahead > 0 && ahead < 9 && side < 2.4) {
+        clear = false;
+        break;
+      }
     }
     const want = clear ? this.targetSpeed : 0;
     this.speed += Math.sign(want - this.speed) * Math.min(Math.abs(want - this.speed), 8 * dt);
@@ -284,8 +287,11 @@ export class Car {
   turnAround() {
     this.dir *= -1;
     this.heading += Math.PI;
-    if (this.axis === 'x') this.pos.x = Math.max(-CFG.cityHalf, Math.min(CFG.cityHalf, this.pos.x));
-    else this.pos.z = Math.max(-CFG.cityHalf, Math.min(CFG.cityHalf, this.pos.z));
+    if (this.axis === 'x') {
+      this.pos.x = Math.max(-CFG.cityHalf, Math.min(CFG.cityHalf, this.pos.x));
+    } else {
+      this.pos.z = Math.max(-CFG.cityHalf, Math.min(CFG.cityHalf, this.pos.z));
+    }
   }
 
   syncMesh(dt) {
@@ -314,13 +320,14 @@ function pickType(rng) {
 // Spawn the traffic fleet and the parked cars the player can steal.
 export function spawnTraffic(scene, rng) {
   const cars = [];
-  for (let i = 0; i < CFG.trafficCount; i++) {
+  for (let i = 0; i < CFG.trafficCount; i += 1) {
     const axis = rng.chance(0.5) ? 'x' : 'z';
     const line = rng.pick(STREET_LINES);
     const along = rng.range(-CFG.cityHalf, CFG.cityHalf);
     const dir = rng.chance(0.5) ? 1 : -1;
-    const x = axis === 'x' ? along : line + (rng.chance(0.5) ? 3.2 : -3.2);
-    const z = axis === 'x' ? line + (rng.chance(0.5) ? 3.2 : -3.2) : along;
+    const off = rng.chance(0.5) ? 3.2 : -3.2;
+    const x = axis === 'x' ? along : line + off;
+    const z = axis === 'x' ? line + off : along;
     const heading = axis === 'x' ? (dir > 0 ? Math.PI / 2 : -Math.PI / 2) : (dir > 0 ? 0 : Math.PI);
     const type = pickType(rng);
     const car = new Car(scene, x, z, heading, rng.pick(CAR_COLORS), { axis, line, dir, type });
@@ -332,7 +339,7 @@ export function spawnTraffic(scene, rng) {
 
 export function spawnParked(scene, rng) {
   const cars = [];
-  for (let i = 0; i < CFG.parkedCount; i++) {
+  for (let i = 0; i < CFG.parkedCount; i += 1) {
     const axis = rng.chance(0.5) ? 'x' : 'z';
     const line = rng.pick(STREET_LINES);
     const along = rng.range(-CFG.cityHalf + 20, CFG.cityHalf - 20);
@@ -350,25 +357,23 @@ export function spawnParked(scene, rng) {
 // A guaranteed sports car at the Marina, for the Smash and Grab mission.
 export function spawnMarinaSports(scene, landmarks) {
   const m = landmarks.marina;
-  const car = new Car(scene, m.x + 6, m.z - 6, Math.PI / 2, 0xe8c33a, { parked: true, type: 'sports' });
-  return car;
+  return new Car(scene, m.x + 6, m.z - 6, Math.PI / 2, 0xe8c33a, { parked: true, type: 'sports' });
 }
 
-// v3: four luxury sports cars parked in a row in front of the Meridian
-// Casino — stealable, and the heist's getaway rides. The centre of the row
-// stays clear for the casino entrance and its red carpet.
+// Four luxury sports cars parked in a row in front of the Meridian Casino
+// — stealable, and the heist's getaway rides. The centre of the row stays
+// clear for the casino entrance and its red carpet.
 export function spawnCasinoSports(scene, landmarks) {
   const c = landmarks.casino;
-  const cars = [];
   const spots = [
     { x: c.x - 14, color: 0xd83a5a },
     { x: c.x - 8, color: 0x2e6fc2 },
     { x: c.x + 8, color: 0xe8c33a },
     { x: c.x + 14, color: 0x7a4fc2 },
   ];
+  const cars = [];
   for (const s of spots) {
-    const car = new Car(scene, s.x, c.z + 18, 0, s.color, { parked: true, type: 'sports' });
-    cars.push(car);
+    cars.push(new Car(scene, s.x, c.z + 18, 0, s.color, { parked: true, type: 'sports' }));
   }
   return cars;
 }
@@ -377,6 +382,5 @@ export function spawnCasinoSports(scene, landmarks) {
 // by the player, and tagged with its garage id so the garage can sell it
 // back and the taxi meter can pay extra for it.
 export function spawnOwnedCar(scene, type, x, z, garageId) {
-  const car = new Car(scene, x, z, Math.PI / 2, 0xe8c33a, { type, parked: true, garageId });
-  return car;
+  return new Car(scene, x, z, Math.PI / 2, 0xe8c33a, { type, parked: true, garageId });
 }

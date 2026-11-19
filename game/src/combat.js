@@ -1,8 +1,8 @@
-// Combat v4: fists plus three guns — pistol, shotgun and SMG — with per-
-// weapon magazines, switching on 1/2/3 (Q cycles), and two enemy kinds: the
-// Kestrel brawlers who close in and swing, and the shooters who keep their
-// distance and fire back. Muzzle flashes and takedown bursts run through
-// the effects pool. v4: the same fire can bring down the PD helicopter
+// Combat: fists plus three guns — pistol, shotgun and SMG — with per-
+// weapon magazines, switching on 1/2/3 (Q cycles), and two enemy kinds:
+// the Kestrel brawlers who close in and swing, and the shooters who keep
+// their distance and fire back. Muzzle flashes and takedown bursts run
+// through the effects pool. The same fire can bring down the PD helicopter
 // overhead — enough hits and the air unit breaks off.
 import { CFG, WEAPONS } from './config.js';
 
@@ -66,51 +66,65 @@ export class Combat {
     const pp = player.inCar ? player.inCar.pos : player.pos;
     for (const e of this.enemies) {
       if (e.hp <= 0) continue;
-      const dx = pp.x - e.pos.x;
-      const dz = pp.z - e.pos.z;
-      const d = Math.hypot(dx, dz);
-      e.attackTimer -= dt;
-      if (e.kind === 'shooter') {
-        // Keep a firing distance, strafe a little, shoot when in range.
-        // Guard d ~ 0 (player standing on the shooter): dividing by d
-        // would poison the position with NaN, so hold still instead.
-        if (d > 16) {
-          e.pos.x += (dx / d) * 3.0 * dt;
-          e.pos.z += (dz / d) * 3.0 * dt;
-        } else if (d > 0.01 && d < 8) {
-          e.pos.x -= (dx / d) * 2.0 * dt;
-          e.pos.z -= (dz / d) * 2.0 * dt;
-        }
-        e.heading = Math.atan2(dx, dz);
-        if (e.attackTimer <= 0 && d < 26) {
-          e.attackTimer = 1.6;
-          world.sound.shot();
-          world.effects.muzzle(e.pos.clone().setY(1.4), e.pos.clone().sub(pp).normalize().multiplyScalar(-1));
-          player.damage(7);
-          world.hud.flashMessage('Kestrel shooter hit you!');
-        }
-      } else {
-        if (d > 2.2) {
-          const sp = 3.4;
-          e.pos.x += (dx / d) * sp * dt;
-          e.pos.z += (dz / d) * sp * dt;
-          e.heading = Math.atan2(dx, dz);
-        } else if (e.attackTimer <= 0) {
-          e.attackTimer = 1.1;
-          player.damage(9);
-          world.hud.flashMessage('Kestrel crew hit you!');
-          world.sound.punch();
-        }
-      }
-      e.mesh.position.copy(e.pos);
-      e.mesh.rotation.y = e.heading;
-      const t = performance.now() / 1000;
-      e.mesh.children.forEach((c, i) => {
-        if (c.geometry && c.geometry.type === 'BoxGeometry' && c.position.y < 0.8) {
-          c.rotation.x = Math.sin(t * 9 + i) * 0.4;
-        }
-      });
+      this.stepEnemy(e, dt, world, player, pp);
     }
+  }
+
+  stepEnemy(e, dt, world, player, pp) {
+    const dx = pp.x - e.pos.x;
+    const dz = pp.z - e.pos.z;
+    const d = Math.hypot(dx, dz);
+    e.attackTimer -= dt;
+    if (e.kind === 'shooter') {
+      // Keep a firing distance, strafe a little, shoot when in range.
+      // Guard d ~ 0 (player standing on the shooter): dividing by d would
+      // poison the position with NaN, so hold still instead.
+      if (d > 16) {
+        e.pos.x += (dx / d) * 3.0 * dt;
+        e.pos.z += (dz / d) * 3.0 * dt;
+      } else if (d > 0.01 && d < 8) {
+        e.pos.x -= (dx / d) * 2.0 * dt;
+        e.pos.z -= (dz / d) * 2.0 * dt;
+      }
+      e.heading = Math.atan2(dx, dz);
+      if (e.attackTimer <= 0 && d < 26) {
+        e.attackTimer = 1.6;
+        world.sound.shot();
+        world.effects.muzzle(e.pos.clone().setY(1.4), e.pos.clone().sub(pp).normalize().multiplyScalar(-1));
+        player.damage(7);
+        world.hud.flashMessage('Kestrel shooter hit you!');
+      }
+    } else if (d > 2.2) {
+      const sp = 3.4;
+      e.pos.x += (dx / d) * sp * dt;
+      e.pos.z += (dz / d) * sp * dt;
+      e.heading = Math.atan2(dx, dz);
+    } else if (e.attackTimer <= 0) {
+      e.attackTimer = 1.1;
+      player.damage(9);
+      world.hud.flashMessage('Kestrel crew hit you!');
+      world.sound.punch();
+    }
+    e.mesh.position.copy(e.pos);
+    e.mesh.rotation.y = e.heading;
+    const t = performance.now() / 1000;
+    e.mesh.children.forEach((c, i) => {
+      if (c.geometry && c.geometry.type === 'BoxGeometry' && c.position.y < 0.8) {
+        c.rotation.x = Math.sin(t * 9 + i) * 0.4;
+      }
+    });
+  }
+
+  // Is a point in front of the player, inside the punch cone?
+  inFront(p, pos, range, halfWidth) {
+    const f = p.forward;
+    const dx = pos.x - p.pos.x;
+    const dz = pos.z - p.pos.z;
+    const d = Math.hypot(dx, dz);
+    const along = dx * f.x + dz * f.z;
+    const side = Math.abs(dx * f.z - dz * f.x);
+    if (d < 1.0) return true;
+    return along > 0 && along < range && side < halfWidth;
   }
 
   tryPunch(world) {
@@ -118,49 +132,26 @@ export class Combat {
     this.punchTimer = CFG.punchCooldown;
     world.sound.punch();
     const p = world.player;
-    const f = p.forward;
-    const hit = (pos, radius, damage, knock) => {
-      const dx = pos.x - p.pos.x;
-      const dz = pos.z - p.pos.z;
-      const d = Math.hypot(dx, dz);
-      const along = dx * f.x + dz * f.z;
-      const side = Math.abs(dx * f.z - dz * f.x);
-      // Point-blank: a target standing on the player is always in reach.
-      if (d < 1.0 || (along > 0 && along < CFG.punchRange + radius && side < 1.2)) {
-        if (knock) {
-          pos.x += f.x * 1.6;
-          pos.z += f.z * 1.6;
-        }
-        return damage;
-      }
-      return 0;
-    };
     let any = false;
     for (const e of this.enemies) {
       if (e.hp <= 0) continue;
-      const dmg = hit(e.pos, 0.6, CFG.punchDamage, true);
-      if (dmg > 0) {
-        e.hp -= dmg;
-        any = true;
-        world.effects.burst(e.pos, 0xff5a4a, 5, 2, 0.4);
-        if (e.hp <= 0) this.dropEnemy(e, world);
-      }
+      if (!this.inFront(p, e.pos, CFG.punchRange + 0.6, 1.2)) continue;
+      const f = p.forward;
+      e.pos.x += f.x * 1.6;
+      e.pos.z += f.z * 1.6;
+      e.hp -= CFG.punchDamage;
+      any = true;
+      world.effects.burst(e.pos, 0xff5a4a, 5, 2, 0.4);
+      if (e.hp <= 0) this.dropEnemy(e, world);
     }
     if (!any) {
       for (const ped of world.peds.list) {
         if (ped.down > 0) continue;
-        const dx = ped.pos.x - p.pos.x;
-        const dz = ped.pos.z - p.pos.z;
-        const d = Math.hypot(dx, dz);
-        const along = dx * f.x + dz * f.z;
-        const side = Math.abs(dx * f.z - dz * f.x);
-        // Point-blank: a ped standing on the player is always in reach.
-        if (d < 1.0 || (along > 0 && along < CFG.punchRange + 0.5 && side < 1.2)) {
-          ped.down = 1;
-          ped.downTimer = 0;
-          world.police.addWanted(1, world);
-          any = true;
-        }
+        if (!this.inFront(p, ped.pos, CFG.punchRange + 0.5, 1.2)) continue;
+        ped.down = 1;
+        ped.downTimer = 0;
+        world.police.addWanted(1, world);
+        any = true;
       }
     }
     return any;
@@ -192,29 +183,13 @@ export class Combat {
     // Shotgun: several pellets, each with its own spread.
     const pellets = def.pellets || 1;
     let hitAny = false;
-    for (let pi = 0; pi < pellets; pi++) {
+    for (let pi = 0; pi < pellets; pi += 1) {
       const spread = pellets > 1 ? (Math.random() - 0.5) * 0.22 : 0;
       const dir = new THREE.Vector3(
         f.x * Math.cos(spread) - f.z * Math.sin(spread), 0,
         f.x * Math.sin(spread) + f.z * Math.cos(spread),
       );
-      let best = null;
-      let bestD = Infinity;
-      for (const e of this.enemies) {
-        if (e.hp <= 0) continue;
-        const dx = e.pos.x - p.pos.x;
-        const dz = e.pos.z - p.pos.z;
-        const d = Math.hypot(dx, dz);
-        const along = dx * dir.x + dz * dir.z;
-        const side = Math.abs(dx * dir.z - dz * dir.x);
-        // Point-blank: an enemy standing on the player is always hit.
-        const inArc = along > 0 && along < def.range && side < 1.4;
-        const reach = d < 1.5 ? 0 : along;
-        if ((inArc || d < 1.5) && reach < bestD) {
-          best = e;
-          bestD = reach;
-        }
-      }
+      const best = this.pickTarget(p, dir, def.range);
       if (best) {
         best.hp -= def.damage;
         hitAny = true;
@@ -222,8 +197,8 @@ export class Combat {
         if (best.hp <= 0) this.dropEnemy(best, world);
       }
     }
-    // v4: the same burst can hit the helicopter overhead — if the chopper
-    // is inside the firing arc, the pellets find it too.
+    // The same burst can hit the helicopter overhead — if the chopper is
+    // inside the firing arc, the pellets find it too.
     if (world.heli && world.heli.active) {
       const hp3 = world.heli.pos;
       const hdx = hp3.x - p.pos.x;
@@ -237,6 +212,28 @@ export class Combat {
     }
     if (hitAny) world.hud.flashMessage('Hit!');
     return hitAny;
+  }
+
+  // The nearest living enemy inside the firing arc, if any.
+  pickTarget(p, dir, range) {
+    let best = null;
+    let bestD = Infinity;
+    for (const e of this.enemies) {
+      if (e.hp <= 0) continue;
+      const dx = e.pos.x - p.pos.x;
+      const dz = e.pos.z - p.pos.z;
+      const d = Math.hypot(dx, dz);
+      const along = dx * dir.x + dz * dir.z;
+      const side = Math.abs(dx * dir.z - dz * dir.x);
+      // Point-blank: an enemy standing on the player is always hit.
+      const inArc = along > 0 && along < range && side < 1.4;
+      const reach = d < 1.5 ? 0 : along;
+      if ((inArc || d < 1.5) && reach < bestD) {
+        best = e;
+        bestD = reach;
+      }
+    }
+    return best;
   }
 
   reload(world) {
@@ -255,10 +252,9 @@ export class Combat {
   spawnEnemies(world, specs) {
     this.clearEnemies();
     for (const spec of specs) {
-      const pos = spec.pos;
       const kind = spec.kind || 'brawler';
-      const g = new THREE.Group();
       const isShooter = kind === 'shooter';
+      const g = new THREE.Group();
       const jacket = new THREE.MeshLambertMaterial({ color: isShooter ? 0x2a3a5a : 0x8a2a2a });
       const skin = new THREE.MeshLambertMaterial({ color: 0xb07a4a });
       const body = new THREE.Mesh(new THREE.BoxGeometry(0.78, 0.9, 0.42), jacket);
@@ -289,11 +285,11 @@ export class Combat {
       ring.rotation.x = -Math.PI / 2;
       ring.position.y = 0.06;
       g.add(ring);
-      g.position.copy(pos);
+      g.position.copy(spec.pos);
       this.scene.add(g);
       this.enemies.push({
-        mesh: g, pos: pos.clone(), heading: 0,
-        hp: isShooter ? 80 : 100, attackTimer: 0, kind: kind || 'brawler',
+        mesh: g, pos: spec.pos.clone(), heading: 0,
+        hp: isShooter ? 80 : 100, attackTimer: 0, kind,
       });
     }
   }

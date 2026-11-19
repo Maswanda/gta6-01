@@ -1,13 +1,32 @@
-// Solmar Bay v4: a sun-soaked coastal city with four districts, each with
-// its own look — Downtown's towers, Old Town's brick rows, Northside's glass
-// and the Marina's beachfront — plus a pier, a lighthouse, a ferris wheel
-// and a marina. One painted ground texture carries the roads; buildings are
-// textured boxes; the sky is a gradient dome with drifting clouds. v4 puts
-// a sign on Rico's garage and a porch light on the safehouse, so the two
-// places the new systems live are easy to find after dark.
+// Solmar Bay: a sun-soaked coastal city with four districts, each with
+// its own look — Downtown's towers, Old Town's brick rows, Northside's
+// glass and the Marina's beachfront — plus a pier, a lighthouse, a ferris
+// wheel and a marina. One painted ground texture carries the roads;
+// buildings are textured boxes; the sky is a gradient dome with drifting
+// clouds. Rico's garage has a sign and the safehouse a porch light, so the
+// two places the new systems live are easy to find after dark.
 import { CFG, STREET_LINES, districtAt } from './config.js';
 
 const WORLD = CFG.worldHalf * 2;
+
+function smoothstep(a, b, x) {
+  const t = Math.max(0, Math.min(1, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+}
+
+function lerpColor(a, b, t) {
+  return new THREE.Color(a).lerp(new THREE.Color(b), t);
+}
+
+// How much of the night is in the sky at a day fraction (0 = dawn, 0.25 =
+// noon, 0.5 = dusk, 0.75 = midnight): dark from just after dusk until just
+// before dawn, with a smooth ramp either side.
+function nightnessAt(frac) {
+  const f = ((frac % 1) + 1) % 1;
+  const up = smoothstep(0.5, 0.62, f);
+  const down = 1 - smoothstep(0.86, 0.96, f);
+  return up * down;
+}
 
 function makeGroundTexture() {
   const S = 2048;
@@ -94,21 +113,32 @@ function makeFacadeTexture(base, litRatio, rng) {
   return tex;
 }
 
-function makeSkyTexture() {
+// A vertical gradient: day sky (blue to golden horizon) or night sky.
+function makeSkyGradient(stops) {
   const cv = document.createElement('canvas');
   cv.width = 16;
   cv.height = 256;
   const g = cv.getContext('2d');
   const grad = g.createLinearGradient(0, 0, 0, 256);
-  grad.addColorStop(0, '#2f6fb4');
-  grad.addColorStop(0.45, '#7fb2dd');
-  grad.addColorStop(0.72, '#f2c98f');
-  grad.addColorStop(1, '#f7b96a');
+  for (const [at, color] of stops) grad.addColorStop(at, color);
   g.fillStyle = grad;
   g.fillRect(0, 0, 16, 256);
   const tex = new THREE.CanvasTexture(cv);
   tex.colorSpace = THREE.SRGBColorSpace;
   return tex;
+}
+
+function makeSkyTexture() {
+  return makeSkyGradient([
+    [0, '#2f6fb4'], [0.45, '#7fb2dd'], [0.72, '#f2c98f'], [1, '#f7b96a'],
+  ]);
+}
+
+// Night sky: a deep blue gradient the day texture fades into after dusk.
+function makeNightSkyTexture() {
+  return makeSkyGradient([
+    [0, '#050a18'], [0.5, '#0e1e3a'], [0.8, '#1a2a4a'], [1, '#2a3a5a'],
+  ]);
 }
 
 // A billboard face with real lettering, so a screenshot can read the city.
@@ -132,41 +162,23 @@ function makeBillboardTexture(text, fg, bg) {
   return tex;
 }
 
-// Night sky: a deep blue gradient the day texture fades into after dusk.
-function makeNightSkyTexture() {
-  const cv = document.createElement('canvas');
-  cv.width = 16;
-  cv.height = 256;
-  const g = cv.getContext('2d');
-  const grad = g.createLinearGradient(0, 0, 0, 256);
-  grad.addColorStop(0, '#050a18');
-  grad.addColorStop(0.5, '#0e1e3a');
-  grad.addColorStop(0.8, '#1a2a4a');
-  grad.addColorStop(1, '#2a3a5a');
-  g.fillStyle = grad;
-  g.fillRect(0, 0, 16, 256);
-  const tex = new THREE.CanvasTexture(cv);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
-}
-
-// How much of the night is in the sky at a day fraction (0 = dawn, 0.25 =
-// noon, 0.5 = dusk, 0.75 = midnight): dark from just after dusk until just
-// before dawn, with a smooth ramp either side.
-function nightnessAt(frac) {
-  const f = ((frac % 1) + 1) % 1;
-  const up = smoothstep(0.5, 0.62, f);
-  const down = 1 - smoothstep(0.86, 0.96, f);
-  return up * down;
-}
-
-function smoothstep(a, b, x) {
-  const t = Math.max(0, Math.min(1, (x - a) / (b - a)));
-  return t * t * (3 - 2 * t);
-}
-
-function lerpColor(a, b, t) {
-  return new THREE.Color(a).lerp(new THREE.Color(b), t);
+function makeTree(x, z, rng) {
+  const g = new THREE.Group();
+  const trunk = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.25, 0.4, 3.4, 6),
+    new THREE.MeshLambertMaterial({ color: 0x7a5a38 }),
+  );
+  trunk.position.y = 1.7;
+  g.add(trunk);
+  const top = new THREE.Mesh(
+    new THREE.ConeGeometry(2.4, 4.6, 8),
+    new THREE.MeshLambertMaterial({ color: 0x3f7a3a }),
+  );
+  top.position.y = 5.4;
+  g.add(top);
+  g.position.set(x, 0, z);
+  g.rotation.y = rng.range(0, Math.PI * 2);
+  return g;
 }
 
 export function buildCity(scene, rng) {
@@ -254,85 +266,7 @@ export function buildCity(scene, rng) {
     .map((c) => makeFacadeTexture(c, 0.42, rng));
   const roofMat = new THREE.MeshLambertMaterial({ color: 0x5a5148 });
 
-  const half = CFG.streetWidth / 2;
-  const parkBlocks = new Set(['2,6', '6,2']);
-  const clearBlocks = new Set(['4,4', '3,6', '6,5', '1,3', '5,1', '7,7', '4,1', '3,4', '5,3', '1,4']);
-  // clearBlocks reserves room for: bank(4,4), garage(3,6), warehouse(6,5),
-  // docks(1,3), safehouse(5,1), bar(7,7), pier approach(4,1), Solmar Tower(3,4),
-  // casino(5,3) and the Old Town clock tower(1,4).
-  for (let i = 0; i < STREET_LINES.length - 1; i++) {
-    for (let j = 0; j < STREET_LINES.length - 1; j++) {
-      const x0 = STREET_LINES[i] + half;
-      const z0 = STREET_LINES[j] + half;
-      const w = CFG.blockPitch - CFG.streetWidth;
-      const cx = x0 + w / 2;
-      const cz = z0 + w / 2;
-      const key = `${i},${j}`;
-      const d = districtAt(cx, cz);
-      const downtown = Math.abs(i - 4) <= 1 && Math.abs(j - 4) <= 1;
-      if (parkBlocks.has(key)) {
-        const lawn = new THREE.Mesh(
-          new THREE.PlaneGeometry(w, w),
-          new THREE.MeshLambertMaterial({ color: 0x5d8a4a }),
-        );
-        lawn.rotation.x = -Math.PI / 2;
-        lawn.position.set(cx, 0.08, cz);
-        group.add(lawn);
-        for (let t = 0; t < 7; t++) {
-          group.add(makeTree(x0 + 4 + rng.range(0, w - 8), z0 + 4 + rng.range(0, w - 8), rng));
-        }
-        // A bench in each park.
-        const bench = new THREE.Mesh(
-          new THREE.BoxGeometry(3, 0.5, 1),
-          new THREE.MeshLambertMaterial({ color: 0x6a4a2a }),
-        );
-        bench.position.set(cx, 0.35, cz);
-        group.add(bench);
-        continue;
-      }
-      if (clearBlocks.has(key)) continue;
-      const facades = d === 'Old Town' ? oldTownFacades : d === 'Northside' ? northFacades : downtownFacades;
-      const count = d === 'Old Town' ? 3 : 2;
-      for (let s = 0; s < count; s++) {
-        const bw = w / count - 4;
-        const bd = w - 6;
-        const bx = x0 + 2 + s * (w / count) + bw / 2;
-        let h;
-        if (d === 'Northside') h = rng.range(30, 58);
-        else if (downtown) h = rng.range(34, 66); // v3: taller Downtown towers
-        else if (d === 'Old Town') h = rng.range(7, 15);
-        else h = rng.range(8, 26);
-        const mat = new THREE.MeshLambertMaterial({ map: facades[rng.int(0, facades.length - 1)] });
-        facadeMats.push(mat);
-        const b = new THREE.Mesh(new THREE.BoxGeometry(bw, h, bd), mat);
-        b.position.set(bx, h / 2, cz);
-        group.add(b);
-        const roof = new THREE.Mesh(new THREE.BoxGeometry(bw + 0.6, 0.8, bd + 0.6), roofMat);
-        roof.position.set(bx, h + 0.4, cz);
-        group.add(roof);
-        // A rooftop box on the taller towers, for skyline variety.
-        if (h > 30 && rng.chance(0.5)) {
-          const cap = new THREE.Mesh(new THREE.BoxGeometry(bw * 0.4, 3, bd * 0.4), roofMat);
-          cap.position.set(bx, h + 2.2, cz);
-          group.add(cap);
-        }
-        // v3: a red rooftop beacon on every tall tower, blinking at night.
-        if (h > 30) {
-          const beacon = new THREE.Mesh(
-            new THREE.SphereGeometry(0.7, 8, 6),
-            new THREE.MeshBasicMaterial({ color: 0xff2222, transparent: true, opacity: 0.9 }),
-          );
-          beacon.position.set(bx, h + 1.2, cz);
-          group.add(beacon);
-          nightGlow.beacons.push(beacon);
-        }
-        colliders.push({
-          minX: bx - bw / 2, maxX: bx + bw / 2,
-          minZ: cz - bd / 2, maxZ: cz + bd / 2,
-        });
-      }
-    }
-  }
+  buildBlocks(group, rng, colliders, facadeMats, nightGlow, roofMat, downtownFacades, oldTownFacades, northFacades);
 
   // Landmark buildings, each with its own look and collider.
   const landmarks = {};
@@ -360,7 +294,7 @@ export function buildCity(scene, rng) {
   landmarkBuilding(-26, 26, 26, 26, 74, 0xe8d8b0, 'tower');
   // The Meridian Casino, Northside's neon block.
   landmarkBuilding(78, -26, 30, 24, 22, 0xd8a0c0, 'casino', northFacades);
-  // v3: the casino's face. A neon MERIDIAN sign over the entrance, a canopy
+  // The casino's face. A neon MERIDIAN sign over the entrance, a canopy
   // on two columns, and a red carpet to the street — the heist walks in here.
   const neonTex = makeBillboardTexture('MERIDIAN', '#ff5ad0', '#1a0a22');
   const neon = new THREE.Mesh(
@@ -392,9 +326,9 @@ export function buildCity(scene, rng) {
   carpet.position.set(78, 0.07, -9.5);
   group.add(carpet);
   landmarks.casinoEntrance = new THREE.Vector3(78, 0, -10);
-  // v4: Rico's garage gets its own sign on the south face, and the
-  // safehouse gets a green porch light — the two places the new systems
-  // live should be easy to find, day or night.
+  // Rico's garage gets its own sign on the south face, and the safehouse
+  // gets a green porch light — the two places the new systems live should
+  // be easy to find, day or night.
   const garageTex = makeBillboardTexture("RICO'S GARAGE", '#ffb23a', '#1a1208');
   const garageSign = new THREE.Mesh(
     new THREE.PlaneGeometry(16, 4),
@@ -419,6 +353,164 @@ export function buildCity(scene, rng) {
   group.add(clockFace);
   void clock;
 
+  buildWaterfront(group, rng, animated, nightGlow, landmarks);
+  buildStreetFurniture(group, rng, colliders, nightGlow, landmarks);
+
+  scene.add(group);
+
+  // --- Day / night ----------------------------------------------------------
+  // The cycle runs on game time: a full day is CFG.dayLength seconds. The
+  // game starts in the morning (frac 0.12); dusk falls near frac 0.5 and
+  // midnight sits at 0.75. setDayFrac jumps the clock (screenshots and the
+  // play-test use it) and returns the nightness, 0 by day and 1 at night.
+  let dayFrac = 0.12;
+  let lastNightness = 0;
+
+  function applyDayNight(n) {
+    lastNightness = n;
+    sun.intensity = 1.7 - n * 1.45;
+    sun.color.copy(lerpColor(0xffe2b0, 0x8aa8ff, n));
+    moon.intensity = n * 0.5;
+    hemi.intensity = 0.95 - n * 0.6;
+    scene.fog.color.copy(lerpColor(0xf2c98f, 0x0e1626, n));
+    scene.background.copy(lerpColor(0x9fc4e8, 0x0a1220, n));
+    skyMat.map = n > 0.5 ? nightSkyTex : daySkyTex;
+    skyMat.needsUpdate = true;
+    moonDisc.material.opacity = n;
+    // Windows glow warm after dark; street and dock lamps burn brighter.
+    for (const m of facadeMats) {
+      m.emissive.setHex(0xffd98a);
+      m.emissiveIntensity = n * 0.38;
+    }
+    if (nightGlow.streetLampMat) nightGlow.streetLampMat.emissiveIntensity = 0.5 + n * 1.6;
+    if (nightGlow.lamps) nightGlow.lamps.emissiveIntensity = 0.5 + n * 1.6;
+  }
+
+  function nightness() {
+    return nightnessAt(dayFrac);
+  }
+
+  function setDayFrac(f) {
+    dayFrac = ((f % 1) + 1) % 1;
+    applyDayNight(nightnessAt(dayFrac));
+    return lastNightness;
+  }
+
+  function animate(dt, t) {
+    dayFrac = (dayFrac + dt / CFG.dayLength) % 1;
+    applyDayNight(nightnessAt(dayFrac));
+    // Rooftop beacons and the yacht's navigation light blink.
+    const blink = Math.sin(t * 3) > 0 ? 1 : 0.25;
+    for (const b of nightGlow.beacons) b.material.opacity = 0.25 + 0.75 * blink * (0.35 + 0.65 * lastNightness);
+    for (const a of animated) {
+      if (a.kind === 'wheel') a.obj.rotation.z += dt * 0.12;
+      else if (a.kind === 'beam') a.obj.rotation.y = t * 0.5;
+      else if (a.kind === 'boat') {
+        a.obj.position.y = 0.1 + Math.sin(t * 0.9 + a.phase) * 0.18;
+        a.obj.rotation.z = Math.sin(t * 0.7 + a.phase) * 0.03;
+      } else if (a.kind === 'cloud') {
+        a.obj.position.x += a.speed * dt;
+        if (a.obj.position.x > 360) a.obj.position.x = -360;
+      }
+    }
+  }
+
+  applyDayNight(nightnessAt(dayFrac));
+
+  return { colliders, landmarks, group, animate, setDayFrac, nightness, dayFrac: () => dayFrac };
+}
+
+// The ordinary blocks: parks, then two or three textured towers per block,
+// with a rooftop box and a blinking beacon on the tall ones.
+function buildBlocks(group, rng, colliders, facadeMats, nightGlow, roofMat, downtownFacades, oldTownFacades, northFacades) {
+  const half = CFG.streetWidth / 2;
+  const parkBlocks = new Set(['2,6', '6,2']);
+  const clearBlocks = new Set(['4,4', '3,6', '6,5', '1,3', '5,1', '7,7', '4,1', '3,4', '5,3', '1,4']);
+  // clearBlocks reserves room for: bank(4,4), garage(3,6), warehouse(6,5),
+  // docks(1,3), safehouse(5,1), bar(7,7), pier approach(4,1), Solmar Tower(3,4),
+  // casino(5,3) and the Old Town clock tower(1,4).
+  for (let i = 0; i < STREET_LINES.length - 1; i++) {
+    for (let j = 0; j < STREET_LINES.length - 1; j++) {
+      const x0 = STREET_LINES[i] + half;
+      const z0 = STREET_LINES[j] + half;
+      const w = CFG.blockPitch - CFG.streetWidth;
+      const cx = x0 + w / 2;
+      const cz = z0 + w / 2;
+      const key = `${i},${j}`;
+      const d = districtAt(cx, cz);
+      const downtown = Math.abs(i - 4) <= 1 && Math.abs(j - 4) <= 1;
+      if (parkBlocks.has(key)) {
+        buildPark(group, rng, x0, z0, w, cx, cz);
+        continue;
+      }
+      if (clearBlocks.has(key)) continue;
+      const facades = d === 'Old Town' ? oldTownFacades : d === 'Northside' ? northFacades : downtownFacades;
+      const count = d === 'Old Town' ? 3 : 2;
+      for (let s = 0; s < count; s++) {
+        const bw = w / count - 4;
+        const bd = w - 6;
+        const bx = x0 + 2 + s * (w / count) + bw / 2;
+        let h;
+        if (d === 'Northside') h = rng.range(30, 58);
+        else if (downtown) h = rng.range(34, 66); // taller Downtown towers
+        else if (d === 'Old Town') h = rng.range(7, 15);
+        else h = rng.range(8, 26);
+        const mat = new THREE.MeshLambertMaterial({ map: facades[rng.int(0, facades.length - 1)] });
+        facadeMats.push(mat);
+        const b = new THREE.Mesh(new THREE.BoxGeometry(bw, h, bd), mat);
+        b.position.set(bx, h / 2, cz);
+        group.add(b);
+        const roof = new THREE.Mesh(new THREE.BoxGeometry(bw + 0.6, 0.8, bd + 0.6), roofMat);
+        roof.position.set(bx, h + 0.4, cz);
+        group.add(roof);
+        // A rooftop box on the taller towers, for skyline variety.
+        if (h > 30 && rng.chance(0.5)) {
+          const cap = new THREE.Mesh(new THREE.BoxGeometry(bw * 0.4, 3, bd * 0.4), roofMat);
+          cap.position.set(bx, h + 2.2, cz);
+          group.add(cap);
+        }
+        // A red rooftop beacon on every tall tower, blinking at night.
+        if (h > 30) {
+          const beacon = new THREE.Mesh(
+            new THREE.SphereGeometry(0.7, 8, 6),
+            new THREE.MeshBasicMaterial({ color: 0xff2222, transparent: true, opacity: 0.9 }),
+          );
+          beacon.position.set(bx, h + 1.2, cz);
+          group.add(beacon);
+          nightGlow.beacons.push(beacon);
+        }
+        colliders.push({
+          minX: bx - bw / 2, maxX: bx + bw / 2,
+          minZ: cz - bd / 2, maxZ: cz + bd / 2,
+        });
+      }
+    }
+  }
+}
+
+function buildPark(group, rng, x0, z0, w, cx, cz) {
+  const lawn = new THREE.Mesh(
+    new THREE.PlaneGeometry(w, w),
+    new THREE.MeshLambertMaterial({ color: 0x5d8a4a }),
+  );
+  lawn.rotation.x = -Math.PI / 2;
+  lawn.position.set(cx, 0.08, cz);
+  group.add(lawn);
+  for (let t = 0; t < 7; t++) {
+    group.add(makeTree(x0 + 4 + rng.range(0, w - 8), z0 + 4 + rng.range(0, w - 8), rng));
+  }
+  // A bench in each park.
+  const bench = new THREE.Mesh(
+    new THREE.BoxGeometry(3, 0.5, 1),
+    new THREE.MeshLambertMaterial({ color: 0x6a4a2a }),
+  );
+  bench.position.set(cx, 0.35, cz);
+  group.add(bench);
+}
+
+// The waterfront: ferris wheel, day boats, the yacht, dock lamps, the pier
+// and the lighthouse with its sweeping beam.
+function buildWaterfront(group, rng, animated, nightGlow, landmarks) {
   // Ferris wheel on the Marina beachfront — it turns, slowly.
   const wheel = new THREE.Group();
   const wheelMat = new THREE.MeshLambertMaterial({ color: 0xd83a5a });
@@ -561,11 +653,16 @@ export function buildCity(scene, rng) {
   group.add(beam);
   animated.push({ obj: beam, kind: 'beam' });
   landmarks.lighthouse = new THREE.Vector3(-60, 0, CFG.worldHalf + 50);
+}
 
+// Street furniture: lamps along the avenues, lettered billboards, palms.
+function buildStreetFurniture(group, rng, colliders, nightGlow, landmarks) {
+  void landmarks;
   // Street lamps along the avenues. Their bulbs brighten after dark.
   const poleMat = new THREE.MeshLambertMaterial({ color: 0x3a3d42 });
   const lampMat = new THREE.MeshLambertMaterial({ color: 0xffe9a8, emissive: 0xffd76a });
   nightGlow.streetLampMat = lampMat;
+  const half = CFG.streetWidth / 2;
   for (const line of STREET_LINES) {
     for (let v = -182; v <= 182; v += 52) {
       const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.16, 6, 6), poleMat);
@@ -577,8 +674,8 @@ export function buildCity(scene, rng) {
     }
   }
 
-  // Billboards on the beachfront avenue, with real lettering in v3, plus
-  // two more on the Downtown avenues so the name reads from across town.
+  // Billboards on the beachfront avenue, with real lettering, plus two
+  // more on the Downtown avenues so the name reads from across town.
   const billboards = [
     { x: -52, z: 208, text: 'SOLMAR', color: '#d83a5a' },
     { x: 52, z: 208, text: 'HEATWAVE', color: '#2e6fc2' },
@@ -611,88 +708,6 @@ export function buildCity(scene, rng) {
   for (let x = -200; x <= 200; x += 26) {
     if (rng.chance(0.6)) group.add(makeTree(x + rng.range(-4, 4), 224, rng));
   }
-
-  scene.add(group);
-
-  // --- Day / night ----------------------------------------------------------
-  // The cycle runs on game time: a full day is CFG.dayLength seconds. The
-  // game starts in the morning (frac 0.12); dusk falls near frac 0.5 and
-  // midnight sits at 0.75. setDayFrac jumps the clock (screenshots and the
-  // play-test use it) and returns the nightness, 0 by day and 1 at night.
-  let dayFrac = 0.12;
-  let lastNightness = 0;
-
-  function applyDayNight(n) {
-    lastNightness = n;
-    sun.intensity = 1.7 - n * 1.45;
-    sun.color.copy(lerpColor(0xffe2b0, 0x8aa8ff, n));
-    moon.intensity = n * 0.5;
-    hemi.intensity = 0.95 - n * 0.6;
-    scene.fog.color.copy(lerpColor(0xf2c98f, 0x0e1626, n));
-    scene.background.copy(lerpColor(0x9fc4e8, 0x0a1220, n));
-    skyMat.map = n > 0.5 ? nightSkyTex : daySkyTex;
-    skyMat.needsUpdate = true;
-    moonDisc.material.opacity = n;
-    // Windows glow warm after dark; street and dock lamps burn brighter.
-    for (const m of facadeMats) {
-      m.emissive.setHex(0xffd98a);
-      m.emissiveIntensity = n * 0.38;
-    }
-    if (nightGlow.streetLampMat) nightGlow.streetLampMat.emissiveIntensity = 0.5 + n * 1.6;
-    if (nightGlow.lamps) nightGlow.lamps.emissiveIntensity = 0.5 + n * 1.6;
-  }
-
-  function nightness() {
-    return nightnessAt(dayFrac);
-  }
-
-  function setDayFrac(f) {
-    dayFrac = ((f % 1) + 1) % 1;
-    applyDayNight(nightnessAt(dayFrac));
-    return lastNightness;
-  }
-
-  function animate(dt, t) {
-    dayFrac = (dayFrac + dt / CFG.dayLength) % 1;
-    applyDayNight(nightnessAt(dayFrac));
-    // Rooftop beacons and the yacht's navigation light blink.
-    const blink = Math.sin(t * 3) > 0 ? 1 : 0.25;
-    for (const b of nightGlow.beacons) b.material.opacity = 0.25 + 0.75 * blink * (0.35 + 0.65 * lastNightness);
-    for (const a of animated) {
-      if (a.kind === 'wheel') a.obj.rotation.z += dt * 0.12;
-      else if (a.kind === 'beam') a.obj.rotation.y = t * 0.5;
-      else if (a.kind === 'boat') {
-        a.obj.position.y = 0.1 + Math.sin(t * 0.9 + a.phase) * 0.18;
-        a.obj.rotation.z = Math.sin(t * 0.7 + a.phase) * 0.03;
-      } else if (a.kind === 'cloud') {
-        a.obj.position.x += a.speed * dt;
-        if (a.obj.position.x > 360) a.obj.position.x = -360;
-      }
-    }
-  }
-
-  applyDayNight(nightnessAt(dayFrac));
-
-  return { colliders, landmarks, group, animate, setDayFrac, nightness, dayFrac: () => dayFrac };
-}
-
-function makeTree(x, z, rng) {
-  const g = new THREE.Group();
-  const trunk = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.25, 0.4, 3.4, 6),
-    new THREE.MeshLambertMaterial({ color: 0x7a5a38 }),
-  );
-  trunk.position.y = 1.7;
-  g.add(trunk);
-  const top = new THREE.Mesh(
-    new THREE.ConeGeometry(2.4, 4.6, 8),
-    new THREE.MeshLambertMaterial({ color: 0x3f7a3a }),
-  );
-  top.position.y = 5.4;
-  g.add(top);
-  g.position.set(x, 0, z);
-  g.rotation.y = rng.range(0, Math.PI * 2);
-  return g;
 }
 
 // Circle (x,z,r) vs axis-aligned building colliders: push the circle out.

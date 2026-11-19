@@ -1,4 +1,4 @@
-// The story v4: Jax Marlowe, a retired getaway driver in Solmar Bay, gets
+// The story: Jax Marlowe, a retired getaway driver in Solmar Bay, gets
 // pulled back in by Mara Voss. Twelve missions now, each a chain of steps —
 // go to, talk, steal, deliver on a timer, fight, race, escape — with a
 // beacon in the world, a blip on the minimap and a payout at the end of
@@ -238,8 +238,8 @@ export class Missions {
     // A step that names a wanted level raises the heat when it starts
     // (the vault guards trip the alarm; a talk step raises it on the talk).
     if (s.wanted && s.type !== 'talk') world.police.addWanted(s.wanted, world);
-    // v4: the air-support step kicks the heat straight to four stars, so
-    // the chopper lifts off the moment the job starts.
+    // The air-support step kicks the heat straight to four stars, so the
+    // chopper lifts off the moment the job starts.
     if (s.type === 'heli-trigger') world.police.addWanted(CFG.heliWanted, world);
     if (s.type === 'defeat' && s.enemies) {
       const base = this.landmarks[s.center || 'docks'];
@@ -249,9 +249,7 @@ export class Missions {
       })));
       world.hud.flashMessage(`${s.enemies.length} of them. Fists or pistol — your call.`);
     }
-    if (s.type === 'race') {
-      world.side.startRace(world, true);
-    }
+    if (s.type === 'race') world.side.startRace(world, true);
     if (s.type === 'talk' && s.talk) this.talkReady = true;
     this.updateBeacon();
   }
@@ -266,11 +264,16 @@ export class Missions {
     this.beacon.position.set(t.x, 0, t.z);
   }
 
+  // Distance from the player (or their car) to a step target.
+  distTo(world, target) {
+    const p = world.player.inCar ? world.player.inCar.pos : world.player.pos;
+    return Math.hypot(p.x - target.x, p.z - target.z);
+  }
+
   update(dt, world) {
     if (this.done) return;
     const s = this.currentStep();
     if (!s) return;
-    const p = world.player.inCar ? world.player.inCar.pos : world.player.pos;
     if (this.beacon.visible) {
       const t = performance.now() / 600;
       this.beaconRing.scale.setScalar(1 + Math.sin(t) * 0.15);
@@ -283,17 +286,12 @@ export class Missions {
         return;
       }
     }
-    if (s.type === 'race') {
-      // The race owns this step: it advances on a win, fails on a timeout.
-      return;
-    }
+    // The race owns its step: it advances on a win, fails on a timeout.
+    if (s.type === 'race') return;
     if (s.type === 'defeat') {
       const left = world.combat.enemiesLeft();
-      if (left === 0) {
-        this.advance(world);
-      } else {
-        s.text = `Deal with the Kestrel crew (${left} left)`;
-      }
+      if (left === 0) this.advance(world);
+      else s.text = `Deal with the Kestrel crew (${left} left)`;
       return;
     }
     if (s.type === 'steal') {
@@ -311,41 +309,15 @@ export class Missions {
       return;
     }
     if (s.type === 'talk') {
-      if (!s.target) return;
-      const d = Math.hypot(p.x - s.target.x, p.z - s.target.z);
-      if (d < s.radius) {
-        world.hud.setPrompt('Press E — talk');
-        if (world.input.consume('KeyE')) {
-          if (s.talk) world.hud.flashMessage(s.talk);
-          world.sound.chime();
-          if (s.gives === 'package') this.hasPackage = true;
-          if (s.gives === 'cash') this.hasCash = true;
-          if (s.wanted) world.police.addWanted(s.wanted, world);
-          this.advance(world);
-        }
-      }
+      this.stepTalk(s, world);
       return;
     }
     if (s.type === 'deliver') {
-      if (this.current().id === 'the-informant' && !this.hasPackage) return;
-      if (this.current().id === 'hot-delivery' && !this.hasPackage) return;
-      if (this.current().id === 'last-run' && !this.hasPackage) return;
-      if (this.current().id === 'smash-and-grab' && !world.player.inCar) return;
-      const d = Math.hypot(p.x - s.target.x, p.z - s.target.z);
-      if (d < s.radius) {
-        this.hasPackage = false;
-        this.advance(world);
-      }
+      this.stepDeliver(s, world);
       return;
     }
     if (s.type === 'escape') {
-      const d = Math.hypot(p.x - s.target.x, p.z - s.target.z);
-      if (d < s.radius && world.police.wanted === 0) {
-        this.hasCash = false;
-        this.advance(world);
-      } else if (d < s.radius) {
-        world.hud.setPrompt('Lose the cops first!');
-      }
+      this.stepEscape(s, world);
       return;
     }
     if (s.type === 'heli-trigger') {
@@ -353,9 +325,40 @@ export class Missions {
       if (world.heli && world.heli.active) this.advance(world);
       return;
     }
-    if (s.target) {
-      const d = Math.hypot(p.x - s.target.x, p.z - s.target.z);
-      if (d < s.radius) this.advance(world);
+    if (s.target && this.distTo(world, s.target) < s.radius) this.advance(world);
+  }
+
+  stepTalk(s, world) {
+    if (!s.target) return;
+    if (this.distTo(world, s.target) >= s.radius) return;
+    world.hud.setPrompt('Press E — talk');
+    if (!world.input.consume('KeyE')) return;
+    if (s.talk) world.hud.flashMessage(s.talk);
+    world.sound.chime();
+    if (s.gives === 'package') this.hasPackage = true;
+    if (s.gives === 'cash') this.hasCash = true;
+    if (s.wanted) world.police.addWanted(s.wanted, world);
+    this.advance(world);
+  }
+
+  stepDeliver(s, world) {
+    const id = this.current().id;
+    if (id === 'the-informant' && !this.hasPackage) return;
+    if (id === 'hot-delivery' && !this.hasPackage) return;
+    if (id === 'last-run' && !this.hasPackage) return;
+    if (id === 'smash-and-grab' && !world.player.inCar) return;
+    if (this.distTo(world, s.target) >= s.radius) return;
+    this.hasPackage = false;
+    this.advance(world);
+  }
+
+  stepEscape(s, world) {
+    if (this.distTo(world, s.target) >= s.radius) return;
+    if (world.police.wanted === 0) {
+      this.hasCash = false;
+      this.advance(world);
+    } else {
+      world.hud.setPrompt('Lose the cops first!');
     }
   }
 
@@ -371,28 +374,28 @@ export class Missions {
     const m = this.current();
     this.step += 1;
     world.sound.chime();
-    if (this.step >= m.steps.length) {
-      world.player.cash += m.reward;
-      world.hud.showBanner('MISSION COMPLETE', `${m.title} — +$${m.reward}`);
-      world.hud.flashMessage(`+$${m.reward} — ${m.title} done`);
-      world.sound.fanfare();
-      world.combat.clearEnemies();
-      // Weapon rewards for the story's big fights.
-      if (m.id === 'payback') world.combat.unlock('shotgun', world);
-      if (m.id === 'the-rival') world.combat.unlock('smg', world);
-      this.index += 1;
-      this.step = 0;
-      if (this.index >= this.defs.length) {
-        this.done = true;
-        this.beacon.visible = false;
-        world.hud.showBanner('STORY COMPLETE', 'You pulled off the Big Score. Solmar Bay is yours — free roam!');
-        world.save.save();
-        return;
-      }
-      world.save.save();
-      this.startMission(world);
+    if (this.step < m.steps.length) {
+      this.enterStep(world);
       return;
     }
-    this.enterStep(world);
+    world.player.cash += m.reward;
+    world.hud.showBanner('MISSION COMPLETE', `${m.title} — +$${m.reward}`);
+    world.hud.flashMessage(`+$${m.reward} — ${m.title} done`);
+    world.sound.fanfare();
+    world.combat.clearEnemies();
+    // Weapon rewards for the story's big fights.
+    if (m.id === 'payback') world.combat.unlock('shotgun', world);
+    if (m.id === 'the-rival') world.combat.unlock('smg', world);
+    this.index += 1;
+    this.step = 0;
+    if (this.index >= this.defs.length) {
+      this.done = true;
+      this.beacon.visible = false;
+      world.hud.showBanner('STORY COMPLETE', 'You pulled off the Big Score. Solmar Bay is yours — free roam!');
+      world.save.save();
+      return;
+    }
+    world.save.save();
+    this.startMission(world);
   }
 }

@@ -1,9 +1,11 @@
-// The wanted system v4: stars rise when the player breaks the law, and the
+// The wanted system: stars rise when the player breaks the law, and the
 // response escalates with them — more interceptors, faster cars, harder
-// rams, and at four stars a roadblock goes up on the street ahead — and the
-// PD helicopter lifts off to pin the player in its searchlight. Lay low out
+// rams, a roadblock on the street ahead at four stars, and the PD
+// helicopter lifting off to pin the player in its searchlight. Lay low out
 // of sight and the heat cools off one star at a time; under the spotlight,
-// hiding does not work.
+// hiding does not work. (v4 rewrite note: the bust timer now reads the
+// config's bustHoldSeconds — the old name, bustedHoldSeconds, matched no
+// key, so the bust could never actually trigger.)
 import { CFG, STREET_LINES } from './config.js';
 import { Car } from './vehicles.js';
 
@@ -86,7 +88,10 @@ export class Police {
     let bestD = Infinity;
     for (const line of STREET_LINES) {
       const d = Math.min(Math.abs(ahead.x - line), Math.abs(ahead.z - line));
-      if (d < bestD) { bestD = d; bestLine = line; }
+      if (d < bestD) {
+        bestD = d;
+        bestLine = line;
+      }
     }
     const onX = Math.abs(ahead.x - bestLine) < Math.abs(ahead.z - bestLine);
     const cars = [];
@@ -113,77 +118,94 @@ export class Police {
     const player = world.player;
     const playerPos = player.inCar ? player.inCar.pos : player.pos;
     const playerSpeed = player.inCar ? Math.abs(player.inCar.speed) : player.speed;
-    if (this.wanted > 0) {
-      this.decayTimer += dt;
-      const nearest = this.nearestDistance(playerPos);
-      // Hidden means no cop can see the player: further than the hidden
-      // radius — 45u on foot or in a car, 75u while crouched. Heat cools
-      // off in 14s when hidden, not 26s, so losing the tail matters.
-      const hiddenRadius = player.crouching ? CFG.hiddenRadiusCrouched : CFG.hiddenRadius;
-      // v4: hiding works only when the chopper is not pinning the player in
-      // its searchlight — the air unit sees straight through a crouch.
-      const lit = world.heli && world.heli.spotlightOnPlayer();
-      const hidden = (nearest === null || nearest > hiddenRadius) && !lit;
-      if (hidden && this.decayTimer > CFG.wantedDecayHiddenSeconds) {
-        this.wanted -= 1;
-        this.decayTimer = 0;
-        world.hud.flashMessage('Heat cooling off…');
-        this.syncCars(world);
-      }
-    }
+    if (this.wanted > 0) this.coolHeat(dt, world, player, playerPos);
     world.sound.siren(this.cars.length > 0, dt);
     const tune = this.wantedTuning();
     let nearest = null;
     for (const c of this.cars) {
       if (!c.alive) continue;
-      const dx = playerPos.x - c.pos.x;
-      const dz = playerPos.z - c.pos.z;
-      const dist = Math.hypot(dx, dz);
-      if (nearest === null || dist < nearest) nearest = dist;
-      const wantHeading = Math.atan2(dx, dz);
-      let dh = wantHeading - c.heading;
-      while (dh > Math.PI) dh -= Math.PI * 2;
-      while (dh < -Math.PI) dh += Math.PI * 2;
-      const steer = Math.max(-1, Math.min(1, dh * 1.4));
-      const throttle = dist > 6 ? 1 : 0.4;
-      // The interceptor's top speed follows the wanted level.
-      const res = c.drive(throttle, steer, dt, world.colliders, world.allCars);
-      if (res && res.crashed) world.sound.crash();
-      if (dist < 3.4 && Math.abs(c.speed) > 6) {
-        const dmg = Math.round(6 * tune.ram);
-        if (player.inCar) {
-          player.inCar.speed *= 0.55;
-          player.damage(dmg);
-        } else {
-          player.damage(dmg + 4);
-        }
-        c.speed *= 0.4;
-        world.effects.sparks(c.pos.clone().setY(1));
-      }
-      const bar = c.mesh.getObjectByName('lightbar');
-      if (bar) {
-        bar.material.emissive.setHex(Math.floor(performance.now() / 260) % 2 === 0 ? 0xff2222 : 0x2244ff);
-      }
+      nearest = this.chase(dt, world, c, player, playerPos, tune, nearest);
     }
-    // A roadblock too far behind the player, or one the player has turned
-    // away from, is lifted and re-laid ahead of the new line of travel.
-    if (this.roadblock) {
-      const d = Math.hypot(playerPos.x - this.roadblock.x, playerPos.z - this.roadblock.z);
-      const heading = player.inCar ? player.inCar.heading : player.heading;
-      const fx = Math.sin(heading);
-      const fz = Math.cos(heading);
-      const dx = this.roadblock.x - playerPos.x;
-      const dz = this.roadblock.z - playerPos.z;
-      const dl = Math.hypot(dx, dz) || 1;
-      const aheadDot = (dx / dl) * fx + (dz / dl) * fz;
-      if (d > 120 || aheadDot < 0.3) {
-        this.clearRoadblock();
-        this.ensureRoadblock(world);
-      }
+    this.relayRoadblock(world, player, playerPos);
+    this.watchBust(dt, world, player, playerPos, playerSpeed, nearest);
+  }
+
+  // Heat cools off one star at a time — but only while hidden. Hidden
+  // means no cop can see the player: further than the hidden radius (45u
+  // on foot or in a car, 75u while crouched), and not pinned in the
+  // chopper's searchlight. Hidden heat cools in 14s; the air unit sees
+  // straight through a crouch.
+  coolHeat(dt, world, player, playerPos) {
+    this.decayTimer += dt;
+    const nearest = this.nearestDistance(playerPos);
+    const hiddenRadius = player.crouching ? CFG.hiddenRadiusCrouched : CFG.hiddenRadius;
+    const lit = world.heli && world.heli.spotlightOnPlayer();
+    const hidden = (nearest === null || nearest > hiddenRadius) && !lit;
+    if (hidden && this.decayTimer > CFG.wantedDecayHiddenSeconds) {
+      this.wanted -= 1;
+      this.decayTimer = 0;
+      world.hud.flashMessage('Heat cooling off…');
+      this.syncCars(world);
     }
+  }
+
+  // One interceptor's frame: steer at the player, ram on contact, flash
+  // the light bar. Returns the nearest distance seen so far.
+  chase(dt, world, c, player, playerPos, tune, nearest) {
+    const dx = playerPos.x - c.pos.x;
+    const dz = playerPos.z - c.pos.z;
+    const dist = Math.hypot(dx, dz);
+    if (nearest === null || dist < nearest) nearest = dist;
+    const wantHeading = Math.atan2(dx, dz);
+    let dh = wantHeading - c.heading;
+    while (dh > Math.PI) dh -= Math.PI * 2;
+    while (dh < -Math.PI) dh += Math.PI * 2;
+    const steer = Math.max(-1, Math.min(1, dh * 1.4));
+    const throttle = dist > 6 ? 1 : 0.4;
+    // The interceptor's top speed follows the wanted level.
+    const res = c.drive(throttle, steer, dt, world.colliders, world.allCars);
+    if (res && res.crashed) world.sound.crash();
+    if (dist < 3.4 && Math.abs(c.speed) > 6) {
+      const dmg = Math.round(6 * tune.ram);
+      if (player.inCar) {
+        player.inCar.speed *= 0.55;
+        player.damage(dmg);
+      } else {
+        player.damage(dmg + 4);
+      }
+      c.speed *= 0.4;
+      world.effects.sparks(c.pos.clone().setY(1));
+    }
+    const bar = c.mesh.getObjectByName('lightbar');
+    if (bar) {
+      bar.material.emissive.setHex(Math.floor(performance.now() / 260) % 2 === 0 ? 0xff2222 : 0x2244ff);
+    }
+    return nearest;
+  }
+
+  // A roadblock too far behind the player, or one the player has turned
+  // away from, is lifted and re-laid ahead of the new line of travel.
+  relayRoadblock(world, player, playerPos) {
+    if (!this.roadblock) return;
+    const d = Math.hypot(playerPos.x - this.roadblock.x, playerPos.z - this.roadblock.z);
+    const heading = player.inCar ? player.inCar.heading : player.heading;
+    const fx = Math.sin(heading);
+    const fz = Math.cos(heading);
+    const dx = this.roadblock.x - playerPos.x;
+    const dz = this.roadblock.z - playerPos.z;
+    const dl = Math.hypot(dx, dz) || 1;
+    const aheadDot = (dx / dl) * fx + (dz / dl) * fz;
+    if (d > 120 || aheadDot < 0.3) {
+      this.clearRoadblock();
+      this.ensureRoadblock(world);
+    }
+  }
+
+  // Busted: a cop sits on the player, close and slow, for three seconds.
+  watchBust(dt, world, player, playerPos, playerSpeed, nearest) {
     if (this.wanted > 0 && nearest !== null && nearest < CFG.bustDistance && playerSpeed < 1.5) {
       this.bustTimer += dt;
-      if (this.bustTimer > CFG.bustedHoldSeconds) {
+      if (this.bustTimer > CFG.bustHoldSeconds) {
         this.busted = true;
         this.bustTimer = 0;
       }

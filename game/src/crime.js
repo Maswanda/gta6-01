@@ -1,12 +1,12 @@
-// Dynamic Crime System v4: Solmar Bay does not wait for a mission to feel
-// alive. Between story jobs, ambient crime erupts on its own — a thug
+// The Dynamic Crime System: Solmar Bay does not wait for a mission to
+// feel alive. Between story jobs, ambient crime erupts on its own — a thug
 // jacking a parked car, a fugitive sports car fleeing two interceptors, a
 // thief working the bank ATM — and the player can step in for a reward, or
-// ignore it and watch it fizzle. The police dispatch to active events, and
+// ignore it and watch it fizzle. Police dispatch to active events, and
 // nearby pedestrians scatter. The player can also rob the ATM themselves
 // (press E at the bank, +$250 and +2 wanted, on a cooldown). Events are
-// seeded, so the same city spawns the same sequence of crimes. v4: stopping
-// a crime while the chopper is overhead pays a $50 air-assist bonus.
+// seeded, so the same city spawns the same sequence of crimes. Stopping a
+// crime while the chopper is overhead pays a $50 air-assist bonus.
 import { CFG } from './config.js';
 import { Rng } from './random.js';
 import { Car } from './vehicles.js';
@@ -73,36 +73,38 @@ export class CrimeSystem {
     this.atmMesh = g;
   }
 
-  // --- Player robbery -------------------------------------------------------
-  // The debug hook and the E interaction both call this: +$250, +2 wanted,
-  // 90s cooldown. Returns false while the cooldown runs.
-  robAtm(world) {
-    if (this.atmRobTimer > 0) return false;
-    this.atmRobTimer = CFG.atmRobCooldown;
-    world.player.cash += CFG.atmRobReward;
-    world.police.addWanted(CFG.atmRobWanted, world);
-    world.hud.flashMessage(`ATM robbed — +$${CFG.atmRobReward}! The PD is coming.`);
-    world.hud.showCashPopup(CFG.atmRobReward);
-    world.sound.register();
-    world.effects.cashShower(this.atmPos.clone().setY(1.5));
-    world.save.save();
-    return true;
+  // --- Frame update ---------------------------------------------------------
+  update(dt, world) {
+    if (this.atmRobTimer > 0) this.atmRobTimer -= dt;
+    if (!this.event) {
+      this.cooldown -= dt;
+      if (this.cooldown <= 0) {
+        this.spawnEvent(this.pickEventType(), world);
+        this.cooldown = CFG.crimeCooldown;
+      }
+      return;
+    }
+    const e = this.event;
+    e.age += dt;
+    if (e.age > CFG.crimeLifetime) {
+      this.fizzle(world);
+      return;
+    }
+    const pos = this.eventPos();
+    if (pos) {
+      this.beacon.position.set(pos.x, 0, pos.z);
+      this.beacon.visible = true;
+      this.beaconRing.scale.setScalar(1 + Math.sin(performance.now() / 300) * 0.15);
+      // Nearby pedestrians scatter from the crime, not just from the player.
+      world.peds.scatterFrom(pos, 30);
+    }
+    if (e.type === 'carjacking') this.updateCarjacking(dt, world, e);
+    else if (e.type === 'pursuit') this.updatePursuit(dt, world, e);
+    else if (e.type === 'atm') this.updateAtm(dt, world, e);
+    this.updateResponders(dt, world, e, pos);
   }
 
-  // --- Event lifecycle ------------------------------------------------------
-  forceCrime(type, world) {
-    if (this.event) this.clearCrime(world);
-    return this.spawnEvent(type, world);
-  }
-
-  clearCrime(world) {
-    if (!this.event) return;
-    this.removeEventActors(world);
-    this.event = null;
-    this.beacon.visible = false;
-    this.cooldown = CFG.crimeCooldown;
-  }
-
+  // --- Spawning -------------------------------------------------------------
   spawnEvent(type, world) {
     if (type === 'carjacking') return this.spawnCarjacking(world);
     if (type === 'pursuit') return this.spawnPursuit(world);
@@ -219,86 +221,7 @@ export class CrimeSystem {
     return null;
   }
 
-  removeEventActors(world) {
-    const e = this.event;
-    if (!e) return;
-    for (const cop of e.responders || []) {
-      cop.remove();
-      const i = world.allCars.indexOf(cop);
-      if (i >= 0) world.allCars.splice(i, 1);
-    }
-    if (e.type === 'pursuit' && e.fugitive) {
-      e.fugitive.remove();
-      const i = world.allCars.indexOf(e.fugitive);
-      if (i >= 0) world.allCars.splice(i, 1);
-    }
-    if (e.thug) this.removeCrimePed(world, e.thug);
-    if (e.thief) this.removeCrimePed(world, e.thief);
-  }
-
-  removeCrimePed(world, ped) {
-    const i = world.peds.list.indexOf(ped);
-    if (i >= 0) world.peds.list.splice(i, 1);
-    world.peds.scene.remove(ped.mesh);
-  }
-
-  resolve(world, reward, text) {
-    this.interventions += 1;
-    // v4: if the chopper is overhead when a crime is stopped, the PD pays
-    // a $50 air-assist bonus on top of the reward.
-    if (world.heli && world.heli.active) reward += 50;
-    world.player.cash += reward;
-    world.hud.showCashPopup(reward);
-    world.hud.showBanner('CRIME STOPPED', `${text} — +$${reward}`);
-    world.hud.flashMessage(`${text} — +$${reward}`);
-    world.sound.register();
-    const pos = this.eventPos();
-    if (pos) world.effects.cashShower(pos.clone().setY(1.5));
-    world.save.save();
-    this.removeEventActors(world);
-    this.event = null;
-    this.beacon.visible = false;
-    this.cooldown = CFG.crimeCooldown;
-  }
-
-  fizzle(world) {
-    world.hud.flashMessage('The crime fizzled out — Solmar Bay moves on.');
-    this.removeEventActors(world);
-    this.event = null;
-    this.beacon.visible = false;
-    this.cooldown = CFG.crimeCooldown;
-  }
-
-  update(dt, world) {
-    if (this.atmRobTimer > 0) this.atmRobTimer -= dt;
-    if (!this.event) {
-      this.cooldown -= dt;
-      if (this.cooldown <= 0) {
-        this.spawnEvent(this.pickEventType(), world);
-        this.cooldown = CFG.crimeCooldown;
-      }
-      return;
-    }
-    const e = this.event;
-    e.age += dt;
-    if (e.age > CFG.crimeLifetime) {
-      this.fizzle(world);
-      return;
-    }
-    const pos = this.eventPos();
-    if (pos) {
-      this.beacon.position.set(pos.x, 0, pos.z);
-      this.beacon.visible = true;
-      this.beaconRing.scale.setScalar(1 + Math.sin(performance.now() / 300) * 0.15);
-      // Nearby pedestrians scatter from the crime, not just from the player.
-      world.peds.scatterFrom(pos, 30);
-    }
-    if (e.type === 'carjacking') this.updateCarjacking(dt, world, e);
-    else if (e.type === 'pursuit') this.updatePursuit(dt, world, e);
-    else if (e.type === 'atm') this.updateAtm(dt, world, e);
-    this.updateResponders(dt, world, e, pos);
-  }
-
+  // --- Per-type updates -----------------------------------------------------
   updateCarjacking(dt, world, e) {
     const car = e.car;
     if (e.phase === 'approach' && e.thug) {
@@ -331,14 +254,19 @@ export class CrimeSystem {
     // The stolen car flees along the streets; the grace keeps a ram that
     // landed while it was still parked from counting.
     if (e.grace > 0) e.grace -= dt;
-    else {
-      const pc = world.player.inCar;
-      if (pc && Math.hypot(pc.pos.x - car.pos.x, pc.pos.z - car.pos.z) < 3.2 && Math.abs(pc.speed) > 6) {
-        this.resolve(world, CFG.crimeRewardCarjacking, 'Stolen car stopped');
-        return;
-      }
+    else if (this.rammedBy(world.player.inCar, car.pos)) {
+      this.resolve(world, CFG.crimeRewardCarjacking, 'Stolen car stopped');
+      return;
     }
     car.driveTraffic(dt, world.colliders, world.allCars);
+  }
+
+  // True when the player's car is close to the target and moving fast
+  // enough for the hit to count as a ram, not a nudge.
+  rammedBy(playerCar, targetPos) {
+    if (!playerCar) return false;
+    const near = Math.hypot(playerCar.pos.x - targetPos.x, playerCar.pos.z - targetPos.z) < 3.2;
+    return near && Math.abs(playerCar.speed) > 6;
   }
 
   updatePursuit(dt, world, e) {
@@ -349,16 +277,10 @@ export class CrimeSystem {
       const dz = f.pos.z - cop.pos.z;
       const dist = Math.hypot(dx, dz);
       if (dist < 0.01) continue;
-      const wantHeading = Math.atan2(dx, dz);
-      let dh = wantHeading - cop.heading;
-      while (dh > Math.PI) dh -= Math.PI * 2;
-      while (dh < -Math.PI) dh += Math.PI * 2;
-      const steer = Math.max(-1, Math.min(1, dh * 1.4));
-      cop.drive(dist > 6 ? 1 : 0.4, steer, dt, world.colliders, world.allCars);
+      this.chase(cop, f.pos.x, f.pos.z, dt, world, dist > 6 ? 1 : 0.4);
     }
     // Ram the fugitive to catch him.
-    const pc = world.player.inCar;
-    if (pc && Math.hypot(pc.pos.x - f.pos.x, pc.pos.z - f.pos.z) < 3.2 && Math.abs(pc.speed) > 6) {
+    if (this.rammedBy(world.player.inCar, f.pos)) {
       this.resolve(world, CFG.crimeRewardPursuit, 'Fugitive caught');
     }
   }
@@ -378,15 +300,101 @@ export class CrimeSystem {
       const dz = pos.z - cop.pos.z;
       const dist = Math.hypot(dx, dz);
       if (dist < 4) continue;
-      const wantHeading = Math.atan2(dx, dz);
-      let dh = wantHeading - cop.heading;
-      while (dh > Math.PI) dh -= Math.PI * 2;
-      while (dh < -Math.PI) dh += Math.PI * 2;
-      const steer = Math.max(-1, Math.min(1, dh * 1.4));
-      cop.drive(1, steer, dt, world.colliders, world.allCars);
+      this.chase(cop, pos.x, pos.z, dt, world, 1);
     }
   }
 
+  // Steer a police car toward a point: turn toward the heading, then drive.
+  chase(cop, tx, tz, dt, world, throttle) {
+    const wantHeading = Math.atan2(tx - cop.pos.x, tz - cop.pos.z);
+    let dh = wantHeading - cop.heading;
+    while (dh > Math.PI) dh -= Math.PI * 2;
+    while (dh < -Math.PI) dh += Math.PI * 2;
+    const steer = Math.max(-1, Math.min(1, dh * 1.4));
+    cop.drive(throttle, steer, dt, world.colliders, world.allCars);
+  }
+
+  // --- Resolution -----------------------------------------------------------
+  resolve(world, reward, text) {
+    this.interventions += 1;
+    // If the chopper is overhead when a crime is stopped, the PD pays a
+    // $50 air-assist bonus on top of the reward.
+    if (world.heli && world.heli.active) reward += 50;
+    world.player.cash += reward;
+    world.hud.showCashPopup(reward);
+    world.hud.showBanner('CRIME STOPPED', `${text} — +$${reward}`);
+    world.hud.flashMessage(`${text} — +$${reward}`);
+    world.sound.register();
+    const pos = this.eventPos();
+    if (pos) world.effects.cashShower(pos.clone().setY(1.5));
+    world.save.save();
+    this.removeEventActors(world);
+    this.event = null;
+    this.beacon.visible = false;
+    this.cooldown = CFG.crimeCooldown;
+  }
+
+  fizzle(world) {
+    world.hud.flashMessage('The crime fizzled out — Solmar Bay moves on.');
+    this.removeEventActors(world);
+    this.event = null;
+    this.beacon.visible = false;
+    this.cooldown = CFG.crimeCooldown;
+  }
+
+  forceCrime(type, world) {
+    if (this.event) this.clearCrime(world);
+    return this.spawnEvent(type, world);
+  }
+
+  clearCrime(world) {
+    if (!this.event) return;
+    this.removeEventActors(world);
+    this.event = null;
+    this.beacon.visible = false;
+    this.cooldown = CFG.crimeCooldown;
+  }
+
+  removeEventActors(world) {
+    const e = this.event;
+    if (!e) return;
+    for (const cop of e.responders || []) {
+      cop.remove();
+      const i = world.allCars.indexOf(cop);
+      if (i >= 0) world.allCars.splice(i, 1);
+    }
+    if (e.type === 'pursuit' && e.fugitive) {
+      e.fugitive.remove();
+      const i = world.allCars.indexOf(e.fugitive);
+      if (i >= 0) world.allCars.splice(i, 1);
+    }
+    if (e.thug) this.removeCrimePed(world, e.thug);
+    if (e.thief) this.removeCrimePed(world, e.thief);
+  }
+
+  removeCrimePed(world, ped) {
+    const i = world.peds.list.indexOf(ped);
+    if (i >= 0) world.peds.list.splice(i, 1);
+    world.peds.scene.remove(ped.mesh);
+  }
+
+  // --- Player robbery -------------------------------------------------------
+  // The debug hook and the E interaction both call this: +$250, +2 wanted,
+  // 90s cooldown. Returns false while the cooldown runs.
+  robAtm(world) {
+    if (this.atmRobTimer > 0) return false;
+    this.atmRobTimer = CFG.atmRobCooldown;
+    world.player.cash += CFG.atmRobReward;
+    world.police.addWanted(CFG.atmRobWanted, world);
+    world.hud.flashMessage(`ATM robbed — +$${CFG.atmRobReward}! The PD is coming.`);
+    world.hud.showCashPopup(CFG.atmRobReward);
+    world.sound.register();
+    world.effects.cashShower(this.atmPos.clone().setY(1.5));
+    world.save.save();
+    return true;
+  }
+
+  // --- Save -----------------------------------------------------------------
   getSave() {
     return { interventions: this.interventions, eventsSeen: this.eventsSeen };
   }
