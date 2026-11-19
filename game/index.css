@@ -1,60 +1,47 @@
-/* Solmar Bay: Heatwave — HUD + menu styling. */
-* { box-sizing: border-box; margin: 0; padding: 0; }
-html, body { width: 100%; height: 100%; overflow: hidden; background: #0b1026; }
-body { font-family: 'Segoe UI', system-ui, sans-serif; color: #fff; }
+/* Solmar Bay: Heatwave v4 — HUD + menu styling. */
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; background: #101418; overflow: hidden; font-family: 'Segoe UI', Arial, sans-serif; }
 #game { display: block; width: 100vw; height: 100vh; }
-#hud { position: fixed; inset: 0; pointer-events: none; z-index: 5; }
-.hud-panel {
+#hud { position: fixed; inset: 0; pointer-events: none; color: #fff; text-shadow: 0 1px 3px rgba(0,0,0,.8); }
+.hud-box {
   position: absolute;
-  background: rgba(8, 14, 28, 0.72);
-  border: 1px solid rgba(255, 255, 255, 0.22);
-  border-radius: 8px;
+  background: rgba(10, 14, 18, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 6px;
   padding: 6px 10px;
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 600;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
 }
-#hud-minimap-wrap { top: 12px; right: 12px; padding: 6px; }
-#hud-minimap { display: block; border-radius: 4px; }
-.hud-district {
-  text-align: center; font-size: 12px; letter-spacing: 1px;
-  text-transform: uppercase; color: #9fd8ff; margin-top: 4px;
-}
-.hud-stars { top: 12px; left: 12px; font-size: 22px; letter-spacing: 3px; }
-.hud-cash { top: 56px; left: 12px; font-size: 20px; color: #7dff9e; }
-.hud-health { top: 100px; left: 12px; font-size: 13px; color: #ffb3b3; }
-.hud-radio { top: 144px; left: 12px; font-size: 13px; color: #ffd23a; }
-.hud-objective {
-  bottom: 52px; left: 50%; transform: translateX(-50%);
-  font-size: 15px; color: #fff; max-width: 70vw; text-align: center;
-}
-.hud-keys {
-  bottom: 12px; left: 50%; transform: translateX(-50%);
-  font-size: 11px; color: #c9d6e3; font-weight: 400; white-space: nowrap;
-}
-.hud-toast {
-  position: absolute; top: 38%; left: 50%; transform: translateX(-50%);
-  font-size: 20px; font-weight: 700; color: #ffd23a;
-  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.9);
-  opacity: 0; transition: opacity 0.3s;
+#hud-stars { top: 12px; right: 14px; color: #ffd23f; font-size: 20px; letter-spacing: 2px; }
+#hud-cash { top: 12px; left: 178px; color: #7dff8a; font-size: 19px; }
+#hud-district { top: 52px; left: 178px; font-size: 13px; opacity: .9; }
+#hud-radio { bottom: 14px; left: 14px; color: #ffd23f; }
+#hud-objective { top: 12px; left: 50%; transform: translateX(-50%); max-width: 46vw; text-align: center; font-size: 14px; }
+#hud-keys { bottom: 14px; right: 14px; font-size: 11px; opacity: .75; }
+#hud-minimap {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  width: 150px;
+  height: 150px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-radius: 50%;
+  background: #1d2b1d;
 }
 #menu {
-  position: fixed; inset: 0; z-index: 10;
-  display: flex; align-items: center; justify-content: center;
-  background: linear-gradient(160deg, rgba(255, 120, 40, 0.55), rgba(10, 16, 38, 0.92) 60%);
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(160deg, rgba(20, 8, 24, .88), rgba(8, 20, 32, .88));
+  color: #fff;
+  text-align: center;
+  cursor: pointer;
+  z-index: 10;
 }
-.menu-card { text-align: center; max-width: 560px; padding: 32px; }
-.menu-card h1 {
-  font-size: 64px; letter-spacing: 6px; font-style: italic;
-  color: #ffd23a; text-shadow: 0 4px 0 #c22e2e, 0 8px 24px rgba(0, 0, 0, 0.7);
-}
-.menu-sub { font-size: 18px; letter-spacing: 4px; color: #9fd8ff; margin: 8px 0 20px; }
-.menu-text { font-size: 15px; line-height: 1.6; color: #e8eef5; margin-bottom: 24px; }
-#menu-start {
-  pointer-events: auto; cursor: pointer;
-  font-size: 20px; font-weight: 800; letter-spacing: 2px;
-  color: #1a1a1a; background: #ffd23a; border: none; border-radius: 10px;
-  padding: 14px 34px; box-shadow: 0 6px 0 #b8860b, 0 10px 24px rgba(0, 0, 0, 0.5);
-}
-#menu-start:active { transform: translateY(4px); box-shadow: 0 2px 0 #b8860b; }
-.menu-keys { margin-top: 22px; font-size: 12px; color: #c9d6e3; line-height: 1.7; }
+#menu h1 { font-size: 52px; margin: 0 0 8px; color: #ffd23f; letter-spacing: 4px; text-shadow: 0 0 24px rgba(255, 210, 63, .45); }
+#menu p { margin: 6px 0; font-size: 17px; opacity: .92; max-width: 640px; }
+#menu .start { margin-top: 26px; font-size: 22px; font-weight: 700; color: #7dff8a; }
+#menu .keys { font-size: 13px; opacity: .7; }

@@ -1,56 +1,70 @@
-// persist.js — save/load via localStorage. Cash, mission progress, weapons,
-// owned vehicles and side results survive a reload.
-import { T } from './tuning.js';
+// Save / load: one localStorage key, plain JSON, versioned so an old
+// save never crashes a new build.
+const KEY = 'solmar-bay-heatwave-save-v4';
+const VERSION = 4;
 
-export class Save {
+export class SaveSys {
   constructor(world) {
     this.world = world;
-    this.key = T.saveKey;
   }
-  save() {
+
+  snapshot() {
     const w = this.world;
-    const data = {
-      cash: w.player.cash,
-      health: w.player.health,
-      mission: w.missions.index,
+    return {
+      version: VERSION,
+      cash: Math.round(w.player.cash),
+      missionIndex: w.missions.index,
       missionStep: w.missions.step,
-      weapons: { weapon: w.combat.weapon, ammo: w.combat.ammo, reserve: w.combat.reserve },
-      garage: w.garage.serialize(),
-      side: w.side.serialize(),
-      radioStation: w.radio.station,
+      unlocked: { ...w.combat.unlocked },
+      garage: { owned: [...w.garage.owned], selected: w.garage.selected },
+      side: {
+        taxiDone: w.side.taxi.doneCount,
+        raceDone: w.side.race.doneCount,
+        collectibles: [...w.side.collectibles.found],
+      },
       dayFrac: w.city.dayFrac(),
     };
-    try { localStorage.setItem(this.key, JSON.stringify(data)); } catch {}
-    return true;
   }
+
+  save() {
+    try {
+      localStorage.setItem(KEY, JSON.stringify(this.snapshot()));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   load() {
     let data = null;
-    try { data = JSON.parse(localStorage.getItem(this.key) || 'null'); } catch {}
-    if (!data) return false;
+    try {
+      data = JSON.parse(localStorage.getItem(KEY) || 'null');
+    } catch {
+      data = null;
+    }
+    if (!data || data.version !== VERSION) return false;
     const w = this.world;
     if (typeof data.cash === 'number') w.player.cash = data.cash;
-    if (typeof data.health === 'number') w.player.health = data.health;
-    if (data.weapons) {
-      if (data.weapons.weapon) w.combat.weapon = data.weapons.weapon;
-      if (data.weapons.ammo) Object.assign(w.combat.ammo, data.weapons.ammo);
-      if (data.weapons.reserve) Object.assign(w.combat.reserve, data.weapons.reserve);
+    if (data.unlocked) Object.assign(w.combat.unlocked, data.unlocked);
+    if (data.garage) {
+      w.garage.owned = [...(data.garage.owned || [])];
+      w.garage.selected = data.garage.selected || null;
+      w.garage.syncOwnedCars();
     }
-    if (data.garage) w.garage.deserialize(data.garage);
-    if (data.side) w.side.deserialize(data.side);
-    if (typeof data.radioStation === 'number') w.radio.station = data.radioStation;
+    if (data.side) {
+      if (typeof data.side.taxiDone === 'number') w.side.taxi.doneCount = data.side.taxiDone;
+      if (typeof data.side.raceDone === 'number') w.side.race.doneCount = data.side.raceDone;
+      if (Array.isArray(data.side.collectibles)) {
+        w.side.collectibles.found = new Set(data.side.collectibles);
+      }
+    }
     if (typeof data.dayFrac === 'number') w.city.setDayFrac(data.dayFrac);
-    // Mission progress is restored only as a best-effort: the story resumes
-    // at the saved mission, at its first step.
-    if (typeof data.mission === 'number' && data.mission >= 0 && data.mission < 12) {
-      w.missions.index = data.mission;
-      w.missions.step = 0;
-      w.missions.done = false;
-      w.missions.storyComplete = false;
-      w.missions._racePoint = 0;
-      w.missions._killSpawned = false;
-      w.missions._heliSet = false;
-    }
     return true;
   }
-  clear() { try { localStorage.removeItem(this.key); } catch {} }
+
+  clear() {
+    try {
+      localStorage.removeItem(KEY);
+    } catch { /* ignore */ }
+  }
 }

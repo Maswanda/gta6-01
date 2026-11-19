@@ -1,449 +1,555 @@
-// main.js — Solmar Bay boot, fixed-timestep loop, the autopilot (?autopilot=1),
-// the ?shot= staging, and the window.__solmar hook the playtest drives.
-// The simulation is 2D (x/z); scene.js draws it in 3D.
-import { T, LM, dist, clamp, angDiff } from './tuning.js';
-import { seedFromUrl } from './rng.js';
+// Solmar Bay: Heatwave v4 — orchestrator. Builds the world, runs the loop,
+// exposes the test API (window.__solmar), the autopilot (?autopilot=1)
+// and the screenshot setups (?shot=...).
+import * as THREE from 'three';
+import { T, LANDMARKS, VEHICLES } from './tuning.js';
+import { makeRng } from './rng.js';
+import { City } from './city.js';
+import { SceneSys } from './scene.js';
 import { Input } from './input.js';
 import { AudioSys } from './audio.js';
 import { Radio } from './radio.js';
-import { City } from './city.js';
-import { Car, nearestCar } from './drive.js';
-import { Traffic } from './traffic.js';
-import { Player } from './onfoot.js';
+import { DriveSys, makeCar } from './drive.js';
+import { OnFoot } from './onfoot.js';
 import { Combat } from './combat.js';
+import { Crime } from './crime.js';
 import { Police } from './police.js';
 import { Helicopter } from './helicopter.js';
-import { Crime } from './crime.js';
 import { Garage } from './garage.js';
-import { Missions } from './missions.js';
 import { Side } from './side.js';
-import { Save } from './persist.js';
-import { Hud } from './hud.js';
+import { Missions } from './missions.js';
+import { Traffic } from './traffic.js';
 import { Effects } from './effects.js';
-import { Scene } from './scene.js';
-import { stageShot } from './shots.js';
+import { Hud } from './hud.js';
+import { SaveSys } from './persist.js';
+import { applyShotMode } from './shots.js';
 
 const params = new URLSearchParams(location.search);
-const SEED = seedFromUrl();
+const SEED = Number(params.get('seed') || 11);
+const TIMESCALE = Number(params.get('timescale') || 1);
 const AUTOPILOT = params.get('autopilot') === '1';
-const TIMESCALE = Math.max(1, Math.min(16, Number(params.get('timescale') || '1') || 1));
-const SHOT = params.get('shot');
+const SHOT = params.get('shot') || null;
 
-// ---- world ----
-const city = new City(SEED);
-const input = new Input();
-const audio = new AudioSys();
-const radio = new Radio(audio);
-const traffic = new Traffic(city, SEED);
-const player = new Player();
-const combat = new Combat();
-const police = new Police(city);
-const heli = new Helicopter(city);
-const crime = new Crime(city);
-const garage = new Garage();
-const side = new Side(city);
-const effects = new Effects();
-const allCars = [...traffic.cars];
-// A starter sedan near the pier so the player can drive from the start.
-const starterCar = new Car(-52, 260, 'sedan');
-allCars.push(starterCar);
+const CAR_COLORS = { sedan: 0x777777, sports: 0xd8a020, muscle: 0x8e3f3f, police: 0xdddddd, taxi: 0xd8c020 };
 
-const world = {
-  city, input, audio, radio, traffic, player, combat, police, heli, crime,
-  garage, side, effects, allCars, seed: SEED,
-  _carClass: { Car },
-};
-const missions = new Missions(world);
-world.missions = missions;
-const save = new Save(world);
-world.save = save;
-const hud = new Hud(world);
-world.hud = hud;
-const scene = new Scene(world);
-world.scene = scene;
-heli.group = scene._heliGroup;
-// The playtest drives the player by its mesh (teleport + visual sync).
-player.mesh = scene._playerMesh;
+export class Game {
+  constructor() {
+    this.rng = makeRng(SEED);
+    this.started = false;
+    this.elapsed = 0;
+    this.errors = [];
+    this.wanted = 0;
+    this.timescale = TIMESCALE;
+    this.autopilot = AUTOPILOT;
+    this.shotMode = SHOT;
+    // Autopilot navigation state.
+    this.autoStuckTimer = 0;
+    this.autoLastPos = { x: 0, z: 0 };
+    this.autoReverseTimer = 0;
+    this.autoDetour = null;
+    this.autoDetourTimer = 0;
 
-// ---- playtest / error capture ----
-const playErrors = [];
-window.addEventListener('error', (e) => { playErrors.push(String(e.message || e.error || 'error')); });
-
-// ---- autopilot ----
-const auto = {
-  enabled: AUTOPILOT,
-  car: null,          // the car the autopilot adopted/spawned (reused, never re-spawned per step)
-  stuckT: 0,          // seconds left in the current stuck window
-  stuckPos: null,     // position at the start of the window
-  objKey: '',
-  idleT: 0,
-};
-
-function ensureAutoCar() {
-  if (player.inCar) return player.inCar;
-  // Reuse the adopted car while it is alive, near and healthy.
-  if (auto.car && auto.car.alive && auto.car.hp > 50
-    && dist(auto.car.pos.x, auto.car.pos.z, player.pos.x, player.pos.z) < 40) {
-    return auto.car;
+    const w = {};
+    this.world = w;
+    w.game = this;
+    w.rng = this.rng;
+    w.city = new City(this.rng);
+    w.audio = new AudioSys();
+    w.radio = new Radio(w.audio);
+    w.input = new Input();
+    w.scene = new SceneSys(w);
+    w.drive = new DriveSys(w);
+    w.onfoot = new OnFoot(w);
+    w.combat = new Combat(w);
+    w.crime = new Crime(w);
+    w.police = new Police(w);
+    w.heli = new Helicopter(w);
+    w.garage = new Garage(w);
+    w.side = new Side(w);
+    w.missions = new Missions(w);
+    w.traffic = new Traffic(w);
+    w.effects = new Effects(w);
+    w.hud = new Hud(w);
+    w.save = new SaveSys(w);
+    w.wanted = 0;
+    // The world object carries `wanted` as a live property the systems
+    // read; keep it in sync through the game's setter.
+    Object.defineProperty(w, 'wanted', {
+      get: () => this.wanted,
+      set: (v) => { this.wanted = Math.max(0, Math.min(T.maxWanted, Math.round(v))); },
+    });
+    w.player = {
+      pos: new THREE.Vector3(-60, 0, 260),
+      heading: 0,
+      health: 100,
+      cash: T.startCash,
+      inCar: null,
+      crouching: false,
+      mesh: null,
+    };
+    w.allCars = [];
+    window.addEventListener('error', (e) => {
+      this.errors.push(String(e.message || e.error || 'error').slice(0, 200));
+    });
   }
-  const near = nearestCar(allCars, player.pos.x, player.pos.z, 40);
-  if (near) {
-    auto.car = near;
-    near.reinforced = true; near.hp = Math.max(near.hp, 1000); near.maxHp = 1000;
-    return near;
-  }
-  const c = new Car(player.pos.x + 8, player.pos.z + 4, 'sedan');
-  c.reinforced = true; c.hp = 1000; c.maxHp = 1000;
-  allCars.push(c);
-  auto.car = c;
-  return c;
-}
 
-function teleportCarNear(car, tx, tz) {
-  // Recovery: place the car just outside the objective so it can drive in.
-  const dx = tx - car.pos.x, dz = tz - car.pos.z;
-  const d = Math.hypot(dx, dz) || 1;
-  const nx = tx - (dx / d) * 12, nz = tz - (dz / d) * 12;
-  car.pos.set(nx, 0, nz);
-  car.heading = Math.atan2(tx - nx, tz - nz);
-  car.speed = 0;
-  car.slide = 0;
-  car.syncMesh(0);
-  player.pos.copy(car.pos);
-  auto.stuckT = 0;
-  auto.stuckPos = null;
-}
-
-// Drive the player's car toward (tx, tz); stop inside radius. Returns true when arrived.
-function autoDriveTo(tx, tz, radius, dt) {
-  if (!player.inCar) {
-    const car = ensureAutoCar();
-    if (!car) return false;
-    // Get in: walk if close, teleport next to it if far.
-    const d = dist(player.pos.x, player.pos.z, car.pos.x, car.pos.z);
-    if (d > 8) { player.pos.set(car.pos.x + 2, 0, car.pos.z + 2); }
-    player.enterCar(car);
-    return false;
+  // --- world helpers used by the systems ---
+  spawnParkedCar(x, z, kind, color) {
+    const w = this.world;
+    const spot = w.city.resolveCollision(x, z, 2.5);
+    const clamped = w.city.clampToMap(spot.x, spot.z);
+    const car = makeCar(w, kind, clamped.x, clamped.z, 0, color ?? CAR_COLORS[kind] ?? 0x888888);
+    w.allCars.push(car);
+    return car;
   }
-  const car = player.inCar;
-  const d = dist(car.pos.x, car.pos.z, tx, tz);
-  if (d <= radius) {
-    car.step(0, 0, true, dt, city);
+
+  teleport(x, z) {
+    const w = this.world;
+    const spot = w.city.resolveCollision(x, z, 1);
+    const clamped = w.city.clampToMap(spot.x, spot.z);
+    if (w.player.inCar) {
+      w.player.inCar.pos.set(clamped.x, 0, clamped.z);
+      w.player.inCar.speed = 0;
+      w.player.inCar.syncMesh();
+    }
+    w.player.pos.set(clamped.x, 0, clamped.z);
+    if (w.player.mesh) w.player.mesh.position.copy(w.player.pos);
     return true;
   }
-  const want = Math.atan2(tx - car.pos.x, tz - car.pos.z);
-  const err = angDiff(car.heading, want);
-  const steer = clamp(err * 2.2, -1, 1);
-  const throttle = Math.abs(err) > 1.2 ? 0.4 : 1;
-  car.step(steer, throttle, false, dt, city);
-  // Stuck recovery over a 4-second window (never per-step: per-step the
-  // car barely moves, so a per-step check teleports every 4 s).
-  const key = `${tx},${tz}`;
-  if (auto.objKey !== key) { auto.objKey = key; auto.stuckT = 0; auto.stuckPos = null; }
-  if (auto.stuckT <= 0) {
-    auto.stuckT = 4;
-    auto.stuckPos = { x: car.pos.x, z: car.pos.z };
-  } else {
-    auto.stuckT -= dt;
-    if (auto.stuckT <= 0) {
-      const moved = dist(car.pos.x, car.pos.z, auto.stuckPos.x, auto.stuckPos.z);
-      // Never teleport a player already inside the objective radius.
-      if (moved < 3 && dist(car.pos.x, car.pos.z, tx, tz) > radius) {
-        teleportCarNear(car, tx, tz);
-      }
-    }
-  }
-  return false;
-}
 
-function autoStep(dt) {
-  if (!auto.enabled || missions.done) return;
-  const obj = missions.objective();
-  if (!obj) return;
-  const pPos = player.inCar ? player.inCar.pos : player.pos;
-  if (obj.kind === 'talk') {
-    const d = dist(pPos.x, pPos.z, obj.x, obj.z);
-    if (d > T.talkRadius) {
-      if (player.inCar) {
-        if (autoDriveTo(obj.x, obj.z, 10, dt)) player.exitCar();
-      } else if (d > 30) {
-        player.teleport(obj.x, obj.z);
-      } else {
-        // Walk the last stretch.
-        const want = Math.atan2(obj.x - pPos.x, obj.z - pPos.z);
-        player.heading = want;
-        input.pressKey('KeyW');
-        player.step(input, dt, city);
-        input.releaseKey('KeyW');
+  setWanted(n) {
+    this.world.wanted = n;
+    this.world.police.decayTimer = 0;
+    return this.world.wanted;
+  }
+
+  addWanted(n) {
+    return this.setWanted(this.world.wanted + n);
+  }
+
+  enterNearestCar() {
+    const w = this.world;
+    const car = w.drive.nearestCar(w.player.pos.x, w.player.pos.z, 8, true);
+    if (!car) return false;
+    return w.drive.enterCar(w.player, car);
+  }
+
+  enterSportsCar() {
+    const w = this.world;
+    let car = w.drive.nearestSportsCar(w.player.pos.x, w.player.pos.z, 60);
+    if (!car) {
+      car = this.spawnParkedCar(w.player.pos.x + 2, w.player.pos.z + 2, 'sports', CAR_COLORS.sports);
+    }
+    if (!car) return false;
+    return w.drive.enterCar(w.player, car);
+  }
+
+  exitCar() {
+    return this.world.drive.exitCar(this.world.player);
+  }
+
+  ejectFromWreck() {
+    const w = this.world;
+    const car = w.player.inCar;
+    if (!car) return;
+    car.alive = false;
+    car.speed = 0;
+    w.drive.exitCar(w.player);
+    w.audio.blip(70, 0.4, 'sawtooth', 0.3);
+  }
+
+  respawn() {
+    const w = this.world;
+    w.player.health = 100;
+    w.player.cash = Math.max(0, w.player.cash - 100);
+    this.setWanted(0);
+    if (w.player.inCar) w.drive.exitCar(w.player);
+    const s = w.city.landmarkPos('safehouse');
+    this.teleport(s.x, s.z + 20);
+  }
+
+  crouch(on) {
+    this.world.player.crouching = !!on;
+    return this.world.player.crouching;
+  }
+
+  // --- key bindings ---
+  bindKeys() {
+    const w = this.world;
+    w.input.on('KeyE', (down) => {
+      if (!down || !this.started) return;
+      // E tries talk FIRST (even from inside the car), then exit the car,
+      // then rob an ATM, then enter the nearest car (v4 fix #8).
+      if (w.missions.talk()) return;
+      if (w.player.inCar) {
+        w.drive.exitCar(w.player);
+        return;
       }
+      if (w.city.nearestAtm(w.player.pos.x, w.player.pos.z, 8)) {
+        if (w.crime.robAtm()) return;
+      }
+      const car = w.drive.nearestCar(w.player.pos.x, w.player.pos.z, 8, true);
+      if (car) w.drive.enterCar(w.player, car);
+    });
+    w.input.on('KeyF', (down) => {
+      if (down && this.started) w.combat.punch();
+    });
+    w.input.on('KeyG', (down) => {
+      if (down && this.started) w.combat.shoot();
+    });
+    w.input.on('KeyR', (down) => {
+      if (down && this.started) w.combat.reload();
+    });
+    w.input.on('KeyT', (down) => {
+      if (!down || !this.started) return;
+      if (w.side.taxi.state === 'pickup') {
+        const t = w.side.taxi;
+        const d = Math.hypot(w.player.pos.x - t.passenger.x, w.player.pos.z - t.passenger.z);
+        if (d < 12) w.side.pickupTaxi();
+      }
+    });
+    w.input.on('KeyC', (down) => {
+      if (down && this.started) this.crouch(!w.player.crouching);
+    });
+    w.input.on('Digit1', (down) => { if (down) w.radio.setStation(0); });
+    w.input.on('Digit2', (down) => { if (down) w.radio.setStation(1); });
+    w.input.on('Digit3', (down) => { if (down) w.radio.setStation(2); });
+    w.input.on('KeyQ', (down) => { if (down) w.radio.cycle(); });
+  }
+
+  // --- autopilot ---
+  autoWalkTo(tx, tz, dt) {
+    const w = this.world;
+    const p = w.player.pos;
+    const dx = tx - p.x;
+    const dz = tz - p.z;
+    const d = Math.hypot(dx, dz);
+    if (d < 1) return true;
+    const heading = Math.atan2(dx, dz);
+    w.player.heading = heading;
+    // Unstuck: no progress for 3s -> sidestep perpendicular.
+    if (Math.hypot(p.x - this.autoLastPos.x, p.z - this.autoLastPos.z) < 0.5) {
+      this.autoStuckTimer += dt;
     } else {
-      missions.onTalk();
+      this.autoStuckTimer = 0;
     }
-    return;
-  }
-  if (obj.kind === 'goto' || obj.kind === 'race') {
-    autoDriveTo(obj.x, obj.z, T.gotoRadius, dt);
-    return;
-  }
-  if (obj.kind === 'safehouse') {
-    // Drive there, then wait for the heat to cool off.
-    if (dist(pPos.x, pPos.z, obj.x, obj.z) > T.gotoRadius) {
-      autoDriveTo(obj.x, obj.z, T.gotoRadius, dt);
+    this.autoLastPos = { x: p.x, z: p.z };
+    let hx = heading;
+    if (this.autoStuckTimer > T.autoUnstuckTime) {
+      hx = heading + Math.PI / 2;
+      if (this.autoStuckTimer > T.autoUnstuckTime + 1.5) this.autoStuckTimer = 0;
     }
-    return;
+    w.onfoot.step(w.player, dt, { x: 0, z: -1 }, hx);
+    return false;
   }
-  if (obj.kind === 'kill') {
-    const d = dist(pPos.x, pPos.z, obj.x, obj.z);
-    if (d > 25) { autoDriveTo(obj.x, obj.z, 20, dt); return; }
-    if (player.inCar) player.exitCar();
-    const alive = combat.alive;
-    if (!alive.length) return;
-    // Aim at the nearest living enemy and fire; reload when dry.
-    let best = null, bestD = Infinity;
-    for (const e of alive) {
-      const dd = dist(player.pos.x, player.pos.z, e.pos.x, e.pos.z);
-      if (dd < bestD) { best = e; bestD = dd; }
-    }
-    if (!best) return;
-    player.heading = Math.atan2(best.pos.x - player.pos.x, best.pos.z - player.pos.z);
-    if (combat.ammo[combat.weapon] <= 0) combat.reload();
-    else combat.fire(player, audio, world);
-    return;
-  }
-  if (obj.kind === 'heli') {
-    // Idle: the mission sets 4 stars, the chopper lifts off, the step advances.
-    return;
-  }
-}
 
-// ---- game state ----
-let playing = false;
-let paused = false;
-let elapsed = 0;
-let startedAt = 0;
-
-function startGame(demo) {
-  if (playing) return;
-  playing = true;
-  startedAt = performance.now();
-  const menu = document.getElementById('menu');
-  if (menu) menu.style.display = 'none';
-  audio.ensure();
-  if (demo) auto.enabled = true;
-  missions.start();
-}
-
-function enterNearestCar() {
-  const car = nearestCar(allCars, player.pos.x, player.pos.z, 9);
-  if (!car) return false;
-  return player.enterCar(car);
-}
-function enterSportsCar() {
-  let best = null, bestD = 60;
-  for (const c of allCars) {
-    if (!c.alive || c.isPolice || c.kind !== 'sports') continue;
-    const d = dist(player.pos.x, player.pos.z, c.pos.x, c.pos.z);
-    if (d < bestD) { best = c; bestD = d; }
-  }
-  if (!best) {
-    best = new Car(player.pos.x + 6, player.pos.z + 4, 'sports');
-    allCars.push(best);
-  }
-  if (player.inCar) player.exitCar();
-  return player.enterCar(best);
-}
-
-// ---- the window.__solmar hook (the playtest drives the game through this) ----
-window.__solmar = {
-  get mission() { return missions.state; },
-  get player() {
-    return {
-      cash: player.cash, health: player.health, armor: player.armor,
-      inCar: !!player.inCar, carKind: player.inCar ? player.inCar.kind : null,
-      x: player.pos.x, z: player.pos.z, heading: player.heading,
-    };
-  },
-  get wanted() { return police.wanted; },
-  get enemiesLeft() { return combat.enemiesLeft; },
-  get unlocked() { return combat.unlocked; },
-  get side() { return side.state; },
-  get radio() { return radio.state; },
-  get garage() { return garage.state; },
-  get heli() { return heli.state; },
-  get drifting() { return { drifting: !!(player.inCar && player.inCar.drifting) }; },
-  get crime() { return crime.state; },
-  world,
-  start: (demo) => startGame(!!demo),
-  teleport: (x, z) => player.teleport(x, z),
-  enterNearestCar,
-  enterSportsCar,
-  setWanted: (n) => police.setWanted(n),
-  setDayFrac: (f) => city.setDayFrac(f),
-  robAtm: () => crime.robAtm(player, world),
-  clearCrime: () => crime.clear(),
-  forceCrime: (type) => crime.force(type, world),
-  crimePos: () => crime.eventPos(),
-  startTaxi: () => side.startTaxi(world),
-  startRace: () => side.startRace(),
-  collectibleIds: () => side.collectibleIds(),
-  collectiblePos: (id) => side.collectiblePos(id),
-  setStation: (i) => radio.setStation(i),
-  buyVehicle: (t) => garage.buy(t, player),
-  selectVehicle: (t) => garage.select(t),
-  sellVehicle: (t) => garage.sell(t, player),
-  crouch: (b) => { player.crouched = !!b; },
-};
-window.__GAME__ = false;
-Object.defineProperty(window, '__PLAYTEST__', {
-  get() {
-    return {
-      missionIndex: missions.index,
-      missionTitle: missions.current ? missions.current.title : 'Done',
-      missionsDone: missions.done ? 12 : missions.index,
-      cash: Math.floor(player.cash),
-      wanted: police.wanted,
-      elapsed: Math.round(elapsed),
-      errors: playErrors,
-      done: missions.storyComplete,
-    };
-  },
-});
-
-// ---- fixed-timestep loop ----
-let last = performance.now();
-let acc = 0;
-const STEP = 1 / 60;
-let booted = false;
-
-function step(dt) {
-  elapsed += dt;
-  // Autopilot first (it drives input / actions).
-  autoStep(dt);
-  // Player: drive or walk.
-  if (player.inCar) {
-    const car = player.inCar;
-    if (!car.alive) { player.exitCar(); }
-    else {
-      const steer = input.steer();
-      const throttle = input.throttle();
-      car.step(steer, throttle, input.down('KeyS') && throttle <= 0 ? false : false, dt, city);
-      if (input.drift && Math.abs(car.speed) > 10) car.slide += input.steer() * 6 * dt;
-      audio.engine(Math.abs(car.speed) / car.maxSpeed, true);
-    }
-  } else {
-    player.step(input, dt, city);
-    audio.engine(0, false);
-  }
-  // Discrete keys.
-  if (input.takePressed('KeyE')) {
-    // Talk FIRST: if a mission talk is in range, do it — even from the
-    // car. (E used to exit the car before trying to talk, which stranded
-    // the player in a car at a talk point: the talk never fired and the
-    // mission could not advance.)
-    if (!missions.onTalk()) {
-      if (player.inCar) player.exitCar();
-      else {
-        // E near a car enters it; E near an ATM robs it.
-        if (!enterNearestCar()) {
-          const p = player.pos;
-          const near = city.nearestAtm(p.x, p.z, true);
-          if (near && near.d <= T.atmRange + 12) crime.tryAtm(player, world);
+  autoDriveTo(tx, tz, dt) {
+    const w = this.world;
+    const car = w.player.inCar;
+    if (!car) return false;
+    // Waypoint: the target snapped to the road grid when it is off-road.
+    let wx = tx;
+    let wz = tz;
+    if (!w.city.onRoad(tx, tz)) {
+      const rp = w.city.nearestRoadPoint(tx, tz);
+      wx = rp.x;
+      wz = rp.z;
+      if (w.city.insideAnyBuilding(wx, wz, 3)) {
+        const tries = [[52, 0], [-52, 0], [0, 52], [0, -52], [104, 0], [-104, 0]];
+        for (const [ox, oz] of tries) {
+          if (!w.city.insideAnyBuilding(wx + ox, wz + oz, 3)) {
+            wx += ox;
+            wz += oz;
+            break;
+          }
         }
       }
     }
+    // A detour overrides the waypoint while it lasts.
+    if (this.autoDetour) {
+      wx = this.autoDetour.x;
+      wz = this.autoDetour.z;
+      this.autoDetourTimer -= dt;
+      if (this.autoDetourTimer <= 0) this.autoDetour = null;
+    }
+    const dx = wx - car.pos.x;
+    const dz = wz - car.pos.z;
+    const dist = Math.hypot(dx, dz);
+    if (dist < 4) return true;
+    const desired = Math.atan2(dx, dz);
+    let diff = desired - car.heading;
+    while (diff > Math.PI) diff -= Math.PI * 2;
+    while (diff < -Math.PI) diff += Math.PI * 2;
+    // Unstuck: reversing when boxed in.
+    const moved = Math.hypot(car.pos.x - this.autoLastPos.x, car.pos.z - this.autoLastPos.z);
+    if (moved < 0.5 && Math.abs(car.speed) < 2) this.autoStuckTimer += dt;
+    else this.autoStuckTimer = 0;
+    this.autoLastPos = { x: car.pos.x, z: car.pos.z };
+    if (this.autoReverseTimer > 0) {
+      this.autoReverseTimer -= dt;
+      w.drive.stepCar(car, dt, -1, diff > 0 ? -1 : 1);
+      w.player.pos.copy(car.pos);
+      w.player.heading = car.heading;
+      return false;
+    }
+    if (this.autoStuckTimer > T.autoUnstuckTime) {
+      this.autoStuckTimer = 0;
+      this.autoReverseTimer = 1.2;
+      // Jog sideways after reversing so the next approach differs.
+      this.autoDetour = {
+        x: car.pos.x + Math.cos(car.heading) * 45,
+        z: car.pos.z - Math.sin(car.heading) * 45,
+      };
+      this.autoDetourTimer = 6;
+      return false;
+    }
+    let throttle = 1;
+    let steer = 0;
+    if (Math.abs(diff) > 2.4) {
+      // Facing away: reverse into the turn.
+      throttle = -1;
+      steer = diff > 0 ? -1 : 1;
+    } else if (Math.abs(diff) > 0.12) {
+      steer = diff > 0 ? 1 : -1;
+    }
+    w.drive.stepCar(car, dt, throttle, steer);
+    w.player.pos.copy(car.pos);
+    w.player.heading = car.heading;
+    return false;
   }
-  if (input.takePressed('KeyF')) crime.punch(player);
-  if (input.takePressed('KeyG')) {
-    if (combat.ammo[combat.weapon] <= 0) combat.reload();
-    else combat.fire(player, audio, world);
-  }
-  if (input.takePressed('KeyR')) {
-    if (combat.ammo[combat.weapon] <= 0) combat.reload();
-    else radio.cycle();
-  }
-  if (input.takePressed('Digit1')) combat.switchWeapon('pistol');
-  if (input.takePressed('Digit2')) combat.switchWeapon('shotgun');
-  if (input.takePressed('Digit3')) combat.switchWeapon('smg');
-  if (input.takePressed('KeyT')) {
-    const r = side.taxiInteract(world);
-    if (!r) side.startTaxi(world);
-  }
-  if (input.takePressed('KeyY')) side.startRace();
-  if (input.takePressed('KeyP')) { paused = !paused; hud.toast(paused ? 'Paused' : 'Resumed'); }
-  if (input.takePressed('KeyH')) hud.toast('Solmar Bay — 12 missions, radio, garage, heli. WASD drive, E talk, G fire.');
-  // World systems.
-  traffic.update(dt, player.pos);
-  combat.update(dt, player, world);
-  police.update(dt, world);
-  heli.update(dt, world);
-  crime.update(dt, world);
-  missions.update(dt);
-  side.update(dt, world);
-  // Safehouse rest: heal while resting at the safehouse (the police may
-  // still be hunting you there, so the heal has to outpace their damage).
-  if (dist(player.pos.x, player.pos.z, LM.safehouse[0], LM.safehouse[1]) < 26) {
-    player.heal(25 * dt);
-  }
-  city.update(dt);
-  radio.update(dt);
-  effects.update(dt);
-  // Wasted / busted.
-  if (player.dead) {
-    player.respawn();
-    police.setWanted(0);
-    hud.toast('Wasted — back at the safehouse');
-  }
-  if (player.inCar && !player.inCar.alive) {
-    player.exitCar();
-    hud.toast('Your ride is wrecked');
-  }
-  // Rendering happens once per frame in frame(), not per simulation step.
-}
 
-function frame(now) {
-  requestAnimationFrame(frame);
-  let dt = (now - last) / 1000;
-  last = now;
-  if (dt > 0.25) dt = 0.25;
-  if (!booted) {
-    booted = true;
-    window.__GAME__ = true;
+  autopilotStep(dt) {
+    const w = this.world;
+    const m = w.missions;
+    if (!this.started || m.done) return;
+    // Mission 6: the sports car comes first.
+    if (m.index === 5 && (!w.player.inCar || w.player.inCar.kind !== 'sports')) {
+      const marina = w.city.landmarkPos('marina');
+      const d = Math.hypot(w.player.pos.x - marina.x, w.player.pos.z - marina.z);
+      if (d < 12) {
+        this.enterSportsCar();
+        return;
+      }
+      this.autoTravelTo(marina.x, marina.z, dt, 12);
+      return;
+    }
+    // Combat: stand, aim, shoot.
+    const kind = m.stepKind();
+    const combatNow = kind === 'kill' || (kind === 'heist' && m.step === 2);
+    const alive = w.combat.enemies.filter((e) => e.hp > 0);
+    if (combatNow && alive.length > 0) {
+      if (w.player.inCar) {
+        this.exitCar();
+        return;
+      }
+      const e = alive[0];
+      const p = w.player.pos;
+      const d = Math.hypot(e.pos.x - p.x, e.pos.z - p.z);
+      if (d > 45) {
+        this.autoWalkTo(e.pos.x, e.pos.z, dt);
+        return;
+      }
+      w.player.heading = Math.atan2(e.pos.x - p.x, e.pos.z - p.z);
+      if (w.combat.ammo[w.combat.weapon] <= 0) w.combat.reload();
+      else w.combat.shoot();
+      return;
+    }
+    const target = m.currentTarget();
+    if (!target) return; // e.g. waiting for the chopper
+    this.autoTravelTo(target.x, target.z, dt, target.kind === 'race' ? 12 : T.autoCarStopDist, target.kind);
+  }
+
+  autoTravelTo(tx, tz, dt, stopDist, kind = 'reach') {
+    const w = this.world;
+    const p = w.player.pos;
+    const dist = Math.hypot(tx - p.x, tz - p.z);
+    if (kind === 'talk' && dist < T.talkRadius - 3) {
+      w.missions.talk();
+      return;
+    }
+    if (dist <= stopDist) {
+      if (w.player.inCar) {
+        this.exitCar();
+        return;
+      }
+      if (kind === 'talk') {
+        if (dist < T.talkRadius - 3) w.missions.talk();
+        else this.autoWalkTo(tx, tz, dt);
+        return;
+      }
+      this.autoWalkTo(tx, tz, dt);
+      return;
+    }
+    // Far: prefer the car.
+    if (!w.player.inCar) {
+      const car = w.drive.nearestCar(p.x, p.z, 40, true);
+      if (car) {
+        const cd = Math.hypot(car.pos.x - p.x, car.pos.z - p.z);
+        if (cd < 6) {
+          w.drive.enterCar(w.player, car);
+        } else {
+          this.autoWalkTo(car.pos.x, car.pos.z, dt);
+        }
+        return;
+      }
+      this.autoWalkTo(tx, tz, dt);
+      return;
+    }
+    this.autoDriveTo(tx, tz, dt);
+  }
+
+  // --- main loop ---
+  step(dt) {
+    const w = this.world;
+    if (!this.started) return;
+    w.city.advance(dt);
+    // Player movement.
+    if (w.player.inCar) {
+      const axes = w.input.driveAxes();
+      w.drive.stepCar(w.player.inCar, dt, axes.throttle, axes.steer);
+      w.player.pos.copy(w.player.inCar.pos);
+      w.player.heading = w.player.inCar.heading;
+      w.audio.engine(Math.abs(w.player.inCar.speed) / w.player.inCar.maxSpeed);
+    } else {
+      const axes = w.input.walkAxes();
+      w.onfoot.step(w.player, dt, axes, w.player.heading);
+      w.audio.engine(0);
+    }
+    w.traffic.step(dt);
+    w.police.step(dt);
+    w.heli.step(dt);
+    w.crime.step(dt);
+    w.combat.step(dt);
+    w.side.step(dt);
+    w.missions.update(dt);
+    w.effects.step(dt);
+    this.elapsed += dt;
+  }
+
+  frame(now) {
+    const dtRaw = Math.min(0.1, (now - this.lastNow) / 1000 || 0.016);
+    this.lastNow = now;
+    const dt = dtRaw * this.timescale;
+    // Substeps keep physics stable at high timescale.
+    let remaining = dt;
+    while (remaining > 0) {
+      const s = Math.min(remaining, 0.05);
+      this.step(s);
+      remaining -= s;
+    }
+    if (this.autopilot) this.autopilotStep(dtRaw * this.timescale);
+    if (this.started) {
+      this.world.scene.followCamera(dtRaw);
+      this.world.scene.render();
+      this.world.hud.update(now);
+    }
+    if (this.autopilot) this.updatePlaytest();
+    requestAnimationFrame((t) => this.frame(t));
+  }
+
+  updatePlaytest() {
+    const w = this.world;
+    window.__PLAYTEST__ = {
+      missionIndex: w.missions.index,
+      missionTitle: w.missions.title,
+      missionsDone: w.missions.index + (w.missions.done ? 1 : 0),
+      cash: Math.round(w.player.cash),
+      wanted: w.wanted,
+      elapsed: Math.round(this.elapsed),
+      errors: this.errors.slice(),
+      done: w.missions.done,
+    };
+  }
+
+  start(withMenu = true) {
+    const w = this.world;
+    this.started = true;
+    const menu = document.getElementById('menu');
+    if (menu) menu.style.display = 'none';
+    w.audio.resume();
+    w.radio.start();
+    return true;
+  }
+
+  boot() {
+    const w = this.world;
+    const canvas = document.getElementById('game');
+    w.scene.init(canvas);
+    w.hud.init();
+    w.input.attach();
+    this.bindKeys();
+    // First mission setup needs the scene (NPC meshes).
+    w.missions.onEnter(0);
+    // Parked cars + traffic so the streets are never empty.
+    const parked = [
+      [-30, 250, 'sedan'], [30, 200, 'sedan'], [-100, 100, 'muscle'],
+      [100, 0, 'sedan'], [0, -100, 'sedan'], [200, 150, 'sedan'],
+      [-200, -50, 'muscle'], [50, -200, 'sedan'], [30, 250, 'sports'],
+    ];
+    for (const [x, z, kind] of parked) this.spawnParkedCar(x, z, kind);
+    w.traffic.spawnInitial(8);
+    // Menu overlay.
+    const menu = document.getElementById('menu');
+    if (menu) {
+      menu.addEventListener('click', () => this.start(true));
+    }
+    this.lastNow = performance.now();
+    requestAnimationFrame((t) => this.frame(t));
+    // Test API.
+    const api = {
+      get mission() { return w.missions.state(); },
+      get player() {
+        return {
+          cash: Math.round(w.player.cash),
+          health: Math.round(w.player.health),
+          x: Math.round(w.player.pos.x),
+          z: Math.round(w.player.pos.z),
+          inCar: !!w.player.inCar,
+          vehicle: w.player.inCar ? w.player.inCar.kind : null,
+        };
+      },
+      get wanted() { return w.wanted; },
+      get heli() { return w.heli.state; },
+      get radio() { return w.radio.state(); },
+      get garage() { return w.garage.state(); },
+      get enemiesLeft() { return w.combat.enemiesLeft(); },
+      get drifting() { return { drifting: !!(w.player.inCar && w.player.inCar.drifting) }; },
+      get crime() { return w.crime.state(); },
+      get side() { return w.side.state(); },
+      get unlocked() { return { ...w.combat.unlocked }; },
+      world: w,
+      start: (v) => this.start(v),
+      teleport: (x, z) => this.teleport(x, z),
+      enterNearestCar: () => this.enterNearestCar(),
+      enterSportsCar: () => this.enterSportsCar(),
+      setWanted: (n) => this.setWanted(n),
+      setDayFrac: (f) => w.city.setDayFrac(f),
+      robAtm: () => w.crime.robAtm(),
+      clearCrime: () => w.crime.clear(),
+      forceCrime: (t) => w.crime.force(t),
+      crimePos: () => w.crime.eventPos(),
+      startTaxi: () => w.side.startTaxi(),
+      startRace: () => w.side.startRace(),
+      collectibleIds: () => w.side.collectibleIds(),
+      collectiblePos: (id) => w.side.collectiblePos(id),
+      setStation: (i) => w.radio.setStation(i),
+      buyVehicle: (id) => w.garage.buy(id),
+      sellVehicle: (id) => w.garage.sell(id),
+      selectVehicle: (id) => w.garage.select(id),
+      crouch: (b) => this.crouch(b),
+    };
+    window.__solmar = api;
+    window.__GAME__ = this;
     window.__solmarReady = true;
+    if (this.shotMode) {
+      this.start(false);
+      applyShotMode(w, this.shotMode);
+    }
+    if (this.autopilot) {
+      this.start(false);
+    }
   }
-  if (!playing || paused) {
-    // Still render so the menu / shot scenes show.
-    scene.render(0);
-    return;
-  }
-  acc += dt * TIMESCALE;
-  let n = 0;
-  while (acc >= STEP && n < 120) {
-    step(STEP);
-    acc -= STEP;
-    n++;
-  }
-  if (n >= 120) acc = 0; // drop backlog rather than spiral
-  // One render + one HUD update per frame, after all simulation steps.
-  hud.update();
-  scene.render(dt);
 }
 
-// ---- boot ----
-function boot() {
-  // Start screen.
-  const menu = document.getElementById('menu');
-  const startBtn = document.getElementById('menu-start');
-  if (startBtn) startBtn.addEventListener('click', () => startGame(false));
-  window.addEventListener('keydown', (e) => {
-    if (!playing && (e.code === 'Enter' || e.code === 'Space')) startGame(false);
-  });
-  // URL modes auto-start.
-  if (SHOT) {
-    startGame(false);
-    stageShot(world, SHOT);
-  } else if (AUTOPILOT) {
-    startGame(true);
-  }
-  requestAnimationFrame(frame);
-}
-boot();
+const game = new Game();
+game.boot();

@@ -1,78 +1,95 @@
-// helicopter.js — HelicopterAI: lifts off at 4–5 wanted stars, orbits the
-// player with a searchlight cone, and pins the player with its spotlight so
-// hidden wanted decay cannot run while it is lit. Gunfire brings it down
-// (100 damage), after which it retreats for 30 s.
-import { T, dist, clamp, angDiff, Vec3 } from './tuning.js';
+// Helicopter: lifts off at 4+ stars, hunts the player's last known spot
+// with a spotlight. While the light is on the player, the heat does not
+// cool. Enough damage brings it down; it retreats for 30s, then may return.
+import * as THREE from 'three';
+import { T } from './tuning.js';
 
 export class Helicopter {
-  constructor(city) {
-    this.city = city;
+  constructor(world) {
+    this.world = world;
     this.active = false;
     this.lit = false;
     this.hp = 100;
-    this.pos = new Vec3(0, 40, 0); // y is altitude
-    this.heading = 0;
-    this.orbitAngle = 0;
     this.retreatTimer = 0;
-    this.lastKnown = new Vec3(0, 0, 0);
-    this.group = null; // three.js group, attached by scene.js
-    this._damageFlash = 0;
+    this.pos = new THREE.Vector3(0, T.heliHeight, 0);
+    this.lastKnown = new THREE.Vector3(0, 0, 0);
+    this.group = null;
+    this.spot = null;
+    this.updateTimer = 0;
   }
-  get state() { return { active: this.active, lit: this.lit }; }
-  damage(n, world) {
+
+  get state() {
+    return { active: this.active, lit: this.lit, hp: this.hp };
+  }
+
+  spawn() {
+    const w = this.world;
+    const p = w.player.pos;
+    // Spawn close (+25/+25) so the spotlight finds the player in ~3s
+    // (v4 fix: the old 120-unit spawn never got lit in time).
+    this.pos.set(p.x + T.heliSpawnOffset, T.heliHeight, p.z + T.heliSpawnOffset);
+    this.lastKnown.set(p.x, 0, p.z);
+    this.hp = 100;
+    this.active = true;
+    if (this.group) {
+      this.group.visible = true;
+      this.group.position.copy(this.pos);
+    }
+  }
+
+  damage(amount, world) {
     if (!this.active) return;
-    this.hp -= n;
-    this._damageFlash = 0.3;
+    this.hp -= amount;
     if (this.hp <= 0) {
+      this.hp = 0;
       this.active = false;
       this.lit = false;
-      this.retreatTimer = 30;
-      this.hp = 100;
-      if (world && world.effects) world.effects.explosion(this.pos.x, this.pos.z);
+      this.retreatTimer = T.heliRetreat;
+      if (this.group) this.group.visible = false;
+      if (world) world.audio.blip(60, 0.5, 'sawtooth', 0.3);
     }
   }
-  update(dt, world) {
-    const player = world.player;
-    const wanted = world.police.wanted;
+
+  step(dt) {
+    const w = this.world;
     if (this.retreatTimer > 0) this.retreatTimer -= dt;
-    // Lift off at 4+ stars (unless retreating from being shot down).
-    if (wanted >= T.heliWanted && this.retreatTimer <= 0 && !this.active) {
-      this.active = true;
-      this.hp = 100;
-      this.pos.x = player.pos.x + 40;
-      this.pos.z = player.pos.z - 40;
-      this.pos.y = 16;
-      this.lastKnown.x = player.pos.x; this.lastKnown.z = player.pos.z;
+    if (!this.active) {
+      if (w.wanted >= 4 && this.retreatTimer <= 0) this.spawn();
+      return;
     }
-    if (wanted < T.heliWanted && this.active) {
-      // Heat gone: the chopper peels away.
+    if (w.wanted < 4) {
+      // Heat gone: the chopper leaves.
       this.active = false;
       this.lit = false;
+      if (this.group) this.group.visible = false;
+      return;
     }
-    if (!this.active) { this.lit = false; return; }
-    // Track the player: remember where they were last seen.
-    const target = player.inCar ? player.inCar.pos : player.pos;
-    this.lastKnown.x = target.x; this.lastKnown.z = target.z;
-    // Orbit overhead at ~16 units up, closing in. Low enough that the
-    // chase camera (pitched down ~18°) can actually see it, and the
-    // 14-unit spotlight cone reaches the ground.
-    this.orbitAngle += dt * 0.5;
-    const wantX = target.x + Math.sin(this.orbitAngle) * 26;
-    const wantZ = target.z + Math.cos(this.orbitAngle) * 26;
-    const dx = wantX - this.pos.x, dz = wantZ - this.pos.z;
+    // Track the player, refreshing lastKnown about once a second.
+    this.updateTimer -= dt;
+    if (this.updateTimer <= 0) {
+      this.updateTimer = 1;
+      this.lastKnown.set(w.player.pos.x, 0, w.player.pos.z);
+    }
+    const dx = this.lastKnown.x - this.pos.x;
+    const dz = this.lastKnown.z - this.pos.z;
     const d = Math.hypot(dx, dz);
-    if (d > 0.5) {
-      const sp = Math.min(26, d * 1.2);
-      this.pos.x += (dx / d) * sp * dt;
-      this.pos.z += (dz / d) * sp * dt;
+    if (d > 2) {
+      const sp = Math.min(T.heliSpeed * dt, d);
+      this.pos.x += (dx / d) * sp;
+      this.pos.z += (dz / d) * sp;
     }
-    this.pos.y += (16 - this.pos.y) * Math.min(1, dt * 1.5);
-    this.heading = Math.atan2(target.x - this.pos.x, target.z - this.pos.z);
-    // Spotlight: lit when the chopper is overhead (within ~60 units) and
-    // has the player in its cone. The harness moves the chopper onto the
-    // player, so this is true whenever it is close.
-    const flatD = dist(this.pos.x, this.pos.z, target.x, target.z);
-    this.lit = flatD < 70;
-    if (this._damageFlash > 0) this._damageFlash -= dt;
+    // Spotlight: lit when close enough to the player in plan view.
+    const pd = Math.hypot(w.player.pos.x - this.pos.x, w.player.pos.z - this.pos.z);
+    this.lit = pd < T.heliLitDist;
+    if (this.group) {
+      this.group.position.copy(this.pos);
+      this.group.rotation.y += dt * 2;
+    }
+    if (this.spot) {
+      this.spot.position.set(this.pos.x, this.pos.y - 1, this.pos.z);
+      this.spot.target.position.set(w.player.pos.x, 0, w.player.pos.z);
+      this.spot.target.updateMatrixWorld();
+      this.spot.visible = this.lit;
+    }
   }
 }

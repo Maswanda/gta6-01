@@ -1,141 +1,180 @@
-// combat.js — weapons and enemies. Hitscan shooting: the player aims with
-// their heading, G fires, R reloads. Enemy bullets damage the CAR when the
-// player is inside one (2/hit) and never the player — that is the v4 rule.
-// Enemies are spawned by missions (docks, warehouse, casino vault).
-import { T, dist, angDiff, clamp } from './tuning.js';
+// Combat: weapons, enemies, shooting, punching, reload.
+// The harness aims by setting player.heading at the target and pressing G,
+// so a shot hits the nearest living enemy inside a cone in front.
+import * as THREE from 'three';
+import { T } from './tuning.js';
 
-let enemySeq = 0;
+const WEAPONS = {
+  pistol: { damage: T.pistolDamage, mag: T.pistolMag, range: T.pistolRange, name: 'Pistol' },
+  shotgun: { damage: T.shotgunDamage, mag: T.shotgunMag, range: 40, name: 'Shotgun' },
+  smg: { damage: T.smgDamage, mag: T.smgMag, range: 55, name: 'SMG' },
+};
 
 export class Combat {
-  constructor() {
+  constructor(world) {
+    this.world = world;
     this.weapon = 'pistol';
-    this.ammo = { pistol: 12, shotgun: 0, smg: 0 };
-    this.reserve = { pistol: 96, shotgun: 0, smg: 0 };
+    this.ammo = { pistol: T.pistolAmmoStart, shotgun: 0, smg: 0 };
+    this.reserve = { pistol: 999, shotgun: 999, smg: 999 };
+    this.unlocked = { shotgun: false, smg: false };
     this.enemies = [];
-    this.cooldown = 0;
-    this.fireFlash = 0;
+    this.reloadTimer = 0;
+    this.shootCooldown = 0;
   }
-  get unlocked() {
-    return { shotgun: this.reserve.shotgun > 0 || this.ammo.shotgun > 0 || this.weapon === 'shotgun', smg: this.reserve.smg > 0 || this.ammo.smg > 0 || this.weapon === 'smg' };
+
+  weaponDef() {
+    return WEAPONS[this.weapon];
   }
-  unlock(kind) {
-    const w = T.weapons[kind];
-    if (!w) return;
-    if (this.ammo[kind] === 0 && this.reserve[kind] === 0) {
-      this.ammo[kind] = w.mag;
-      this.reserve[kind] = w.reserve;
-    }
-  }
-  switchWeapon(kind) {
-    if (!T.weapons[kind]) return false;
-    if (kind !== 'pistol' && this.ammo[kind] <= 0 && this.reserve[kind] <= 0) return false;
-    this.weapon = kind;
-    return true;
-  }
-  reload() {
-    const w = T.weapons[this.weapon];
-    const need = w.mag - this.ammo[this.weapon];
-    if (need <= 0 || this.reserve[this.weapon] <= 0) return false;
-    const take = Math.min(need, this.reserve[this.weapon]);
-    this.ammo[this.weapon] += take;
-    this.reserve[this.weapon] -= take;
-    return true;
-  }
-  spawnEnemies(list) {
-    // list: [{x, z, kind}] — kind 'bayking' | 'enforcer'
-    for (const e of list) {
-      this.enemies.push({
-        id: ++enemySeq,
-        kind: e.kind || 'bayking',
-        pos: { x: e.x, z: e.z },
+
+  spawnEnemies(kind, x, z, count) {
+    const w = this.world;
+    const made = [];
+    for (let i = 0; i < count; i++) {
+      const a = (i / count) * Math.PI * 2 + 0.6;
+      const ex = x + Math.cos(a) * 14;
+      const ez = z + Math.sin(a) * 14;
+      const e = {
+        id: `${kind}-${Date.now()}-${i}`,
+        kind,
+        pos: new THREE.Vector3(ex, 0, ez),
         hp: T.enemyHp,
-        shootTimer: 0.8 + Math.random() * 0.8,
-        heading: 0,
+        alive: true,
+        shootTimer: 0.8 + i * 0.4,
         mesh: null,
-      });
+      };
+      e.mesh = w.scene.makeEnemyMesh(e);
+      e.mesh.position.copy(e.pos);
+      this.enemies.push(e);
+      made.push(e);
     }
+    return made;
   }
-  get alive() { return this.enemies.filter((e) => e.hp > 0); }
-  get enemiesLeft() { return this.alive.length; }
-  clearEnemies() { this.enemies = []; }
-  // Fire the current weapon along the player's heading. Returns hits.
-  // The helicopter is a valid target too (2D aim at its ground position):
-  // gunfire brings it down, which is how mission 11 is won.
-  fire(player, audio, world) {
-    if (this.cooldown > 0) return 0;
-    const w = T.weapons[this.weapon];
-    if (this.ammo[this.weapon] <= 0) { this.reload(); return 0; }
-    this.cooldown = w.rate;
-    this.ammo[this.weapon] -= 1;
-    this.fireFlash = 0.08;
-    if (audio) audio.shot(this.weapon);
-    const origin = player.inCar ? player.inCar.pos : player.pos;
-    const heading = player.heading;
-    let hits = 0;
-    const pellets = w.pellets || 1;
-    for (let p = 0; p < pellets; p++) {
-      const spread = (pellets > 1 ? (p - (pellets - 1) / 2) * 0.09 : 0);
-      const aim = heading + spread;
-      let best = null, bestD = w.range, bestAng = 0.35;
-      for (const e of this.enemies) {
-        if (e.hp <= 0) continue;
-        const d = dist(origin.x, origin.z, e.pos.x, e.pos.z);
-        if (d > w.range) continue;
-        const ang = Math.abs(angDiff(aim, Math.atan2(e.pos.x - origin.x, e.pos.z - origin.z)));
-        // Wider cone up close, tighter far away.
-        const cone = 0.35 + (1 - d / w.range) * 0.25;
-        if (ang < cone && d < bestD) { best = e; bestD = d; bestAng = ang; }
-      }
-      if (best) {
-        best.hp -= w.damage;
-        hits++;
-        if (best.hp <= 0) best.hp = 0;
-      }
-      // Helicopter: same cone test against its ground position. Each
-      // pellet that would hit it deals full weapon damage.
-      const heli = world && world.heli;
-      if (heli && heli.active) {
-        const d = dist(origin.x, origin.z, heli.pos.x, heli.pos.z);
-        if (d <= w.range) {
-          const ang = Math.abs(angDiff(aim, Math.atan2(heli.pos.x - origin.x, heli.pos.z - origin.z)));
-          const cone = 0.35 + (1 - d / w.range) * 0.25;
-          if (ang < cone) {
-            heli.damage(w.damage, world);
-            hits++;
-          }
-        }
-      }
+
+  enemiesLeft() {
+    return this.enemies.filter((e) => e.hp > 0).length;
+  }
+
+  clearEnemies() {
+    for (const e of this.enemies) {
+      if (e.mesh) this.world.scene.removeMesh(e.mesh);
     }
-    return hits;
+    this.enemies = [];
   }
-  // Enemies shoot at the player. On foot the player takes damage; in a car
-  // the CAR takes 2/hit and the player is safe inside it.
-  update(dt, player, world) {
-    if (this.cooldown > 0) this.cooldown -= dt;
-    if (this.fireFlash > 0) this.fireFlash -= dt;
+
+  // Fire the current weapon. Returns the enemy hit, or null.
+  shoot() {
+    const w = this.world;
+    if (this.reloadTimer > 0 || this.shootCooldown > 0) return null;
+    if (this.ammo[this.weapon] <= 0) {
+      this.reload();
+      return null;
+    }
+    this.ammo[this.weapon]--;
+    this.shootCooldown = 0.18;
+    w.audio.shot();
+    const p = w.player.inCar ? w.player.inCar.pos : w.player.pos;
+    const def = this.weaponDef();
+    let best = null;
+    let bestScore = Infinity;
     for (const e of this.enemies) {
       if (e.hp <= 0) continue;
-      const target = player.inCar ? player.inCar.pos : player.pos;
-      const d = dist(e.pos.x, e.pos.z, target.x, target.z);
-      e.heading = Math.atan2(target.x - e.pos.x, target.z - e.pos.z);
-      e.shootTimer -= dt;
-      if (d < T.enemyShootRange && e.shootTimer <= 0) {
-        e.shootTimer = T.enemyShootInterval * (0.8 + Math.random() * 0.5);
-        if (player.inCar) {
-          player.inCar.damage(T.enemyBulletCarDamage);
-        } else {
-          player.damage(T.enemyBulletPlayerDamage);
-        }
-        if (world.effects) world.effects.muzzle(e.pos.x, e.pos.z);
-      }
-      // Enemies close in slowly if far away.
-      if (d > 18) {
-        const step = 3.2 * dt;
-        e.pos.x += Math.sin(e.heading) * step;
-        e.pos.z += Math.cos(e.heading) * step;
+      const dx = e.pos.x - p.x;
+      const dz = e.pos.z - p.z;
+      const d = Math.hypot(dx, dz);
+      if (d > def.range) continue;
+      const ang = Math.atan2(dx, dz);
+      let diff = Math.abs(ang - w.player.heading);
+      if (diff > Math.PI) diff = Math.PI * 2 - diff;
+      if (diff > T.pistolCone) continue;
+      const score = d + diff * 20;
+      if (score < bestScore) {
+        best = e;
+        bestScore = score;
       }
     }
-    // Drop dead enemies from the list once the player is far away.
-    if (this.enemies.length > 40) this.enemies = this.enemies.filter((e) => e.hp > 0);
+    if (best) {
+      best.hp -= def.damage;
+      w.effects.muzzle(p, w.player.heading);
+      if (best.hp <= 0) {
+        best.hp = 0;
+        if (best.mesh) best.mesh.visible = false;
+        w.audio.blip(180, 0.15, 'sawtooth', 0.2);
+      }
+      return best;
+    }
+    w.effects.muzzle(p, w.player.heading);
+    return null;
+  }
+
+  reload() {
+    if (this.reloadTimer > 0) return;
+    const def = this.weaponDef();
+    if (this.ammo[this.weapon] >= def.mag) return;
+    this.reloadTimer = T.reloadTime;
+  }
+
+  punch() {
+    // F: a melee swing. Its real job in v4 is stopping an ATM thief —
+    // the key handler consumes F before the crime system sees it, so the
+    // punch itself asks crime whether a thief is in reach (fix #5).
+    this.world.audio.blip(90, 0.08, 'square', 0.15);
+    if (this.world.crime) return this.world.crime.tryAtmPunch();
+    return false;
+  }
+
+  switchWeapon(name) {
+    if (name === 'shotgun' && !this.unlocked.shotgun) return false;
+    if (name === 'smg' && !this.unlocked.smg) return false;
+    if (!WEAPONS[name]) return false;
+    this.weapon = name;
+    return true;
+  }
+
+  unlock(name) {
+    if (name === 'shotgun') {
+      this.unlocked.shotgun = true;
+      this.ammo.shotgun = WEAPONS.shotgun.mag;
+    }
+    if (name === 'smg') {
+      this.unlocked.smg = true;
+      this.ammo.smg = WEAPONS.smg.mag;
+    }
+  }
+
+  step(dt) {
+    if (this.reloadTimer > 0) {
+      this.reloadTimer -= dt;
+      if (this.reloadTimer <= 0) {
+        const def = this.weaponDef();
+        this.ammo[this.weapon] = def.mag;
+        this.reloadTimer = 0;
+      }
+    }
+    if (this.shootCooldown > 0) this.shootCooldown -= dt;
+    // Enemies shoot back at the player.
+    const w = this.world;
+    const p = w.player.inCar ? w.player.inCar.pos : w.player.pos;
+    for (const e of this.enemies) {
+      if (e.hp <= 0) continue;
+      e.shootTimer -= dt;
+      if (e.shootTimer > 0) continue;
+      e.shootTimer = T.enemyShootInterval;
+      const d = Math.hypot(e.pos.x - p.x, e.pos.z - p.z);
+      if (d > T.enemyShootRange) continue;
+      if (w.player.inCar) {
+        // Enemy bullets vs a car: 2 hp per hit (v4 fix).
+        w.player.inCar.hp -= T.policeRamCarDamage;
+        if (w.player.inCar.hp <= 0) {
+          w.player.inCar.hp = 0;
+          w.game.ejectFromWreck();
+        }
+      } else {
+        w.player.health -= T.enemyShootDamage;
+        if (w.player.health <= 0) {
+          w.player.health = 0;
+          w.game.respawn();
+        }
+      }
+    }
   }
 }
