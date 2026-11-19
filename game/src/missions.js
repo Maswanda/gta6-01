@@ -1,246 +1,185 @@
-// missions.js — Solmar Bay: the twelve-mission story of Rook, a driver
-// new to the bay, working for the fixer Mara Voss against the Bay Kings.
-// Each mission is data (steps with a kind); the engine sets a step up,
-// watches it complete, and chains the next. The final mission ends the story.
-import { TUNE } from './tuning.js';
+// 12 story missions, chained by explicit nextIndex (mission 12 nextIndex: null => done).
+// Objective types: goto (radius 40 — a car can actually reach it), enterCar, kill,
+// robAtm (skips ATMs on cooldown), survive (wanted >= level for N seconds), chase.
+// Missions never fail: busted/wasted just respawns the player and the mission continues.
+import { MISSION_REWARD } from './tuning.js';
+import { spawnEnemies } from './combat.js';
+import { createCar } from './drive.js';
+import { nearestReadyAtm } from './crime.js';
+import { sfx } from './audio.js';
 
-const MISSIONS = [
-  { title: 'Welcome to Solmar', brief: 'Rook lands in Solmar Bay. Mara Voss wants a word at the Marina.',
-    steps: [{ kind: 'goto', x: -224, z: 224, r: 12, text: 'Meet Mara at the Marina' }] },
-  { title: 'First Wheels', brief: 'Mara needs wheels. Take any car and bring it Downtown.',
-    steps: [
-      { kind: 'enterCar', text: 'Take a car — press E near one' },
-      { kind: 'goto', x: 224, z: -224, r: 40, text: 'Drive to Downtown', needCar: true },
-    ] },
-  { title: 'The Drop', brief: 'A package is waiting at Vice Pier. Take it to the Hills.',
-    steps: [
-      { kind: 'collect', x: -224, z: -224, r: 9, text: 'Pick up the package at Vice Pier' },
-      { kind: 'deliver', x: 224, z: 224, r: 40, text: 'Deliver it to the Hills Observatory', needCar: true },
-    ] },
-  { title: 'Bay Kings', brief: 'The Bay Kings are taxing the beach. Clear them out.',
-    steps: [{ kind: 'kill', n: 3, sx: -192, sz: -192, text: 'Clear the Bay Kings at Vice Beach' }] },
-  { title: 'Getaway Driver', brief: 'Move a package across town. The law will be on you.',
-    steps: [
-      { kind: 'goto', x: 0, z: 0, r: 12, text: 'Meet the crew at the crossroads' },
-      { kind: 'deliver', x: -96, z: 192, r: 14, text: "Drive the package to Rico's Garage", needCar: true, setWanted: 2 },
-    ] },
-  { title: 'Night Shift', brief: 'Mara wants quick cash. An ATM will do.',
-    steps: [{ kind: 'robAtm', text: 'Rob an ATM — press E at a glowing kiosk' }] },
-  { title: 'The Informant', brief: 'An informant at Solmar Tower has names. The Kings know too.',
-    steps: [
-      { kind: 'goto', x: 224, z: -224, r: 12, text: 'Meet the informant at Solmar Tower' },
-      { kind: 'kill', n: 4, sx: 192, sz: -192, text: 'Ambush! Clear the gang' },
-    ] },
-  { title: 'Hot Wheels', brief: 'A street race across the bay. You will need muscle.',
-    steps: [
-      { kind: 'enterCar', type: 'muscle', text: 'Get a muscle car', spawnCar: { type: 'muscle', dx: 14, dz: 6 } },
-      { kind: 'goto', x: 64, z: 64, r: 12, text: 'Checkpoint 1 — the plaza', needCar: true },
-      { kind: 'goto', x: -192, z: -64, r: 12, text: 'Checkpoint 2 — the beach road', needCar: true },
-      { kind: 'goto', x: 224, z: 224, r: 40, text: 'Checkpoint 3 — the Hills finish line', needCar: true },
-    ] },
-  { title: 'The Vault', brief: 'Two ATMs, one night. Mara is counting.',
-    steps: [
-      { kind: 'robAtm', text: 'Rob an ATM (1/2)' },
-      { kind: 'robAtm', text: 'Rob another ATM (2/2)' },
-    ] },
-  { title: 'Heatwave', brief: 'Hit the Downtown job, then survive the heat.',
-    steps: [
-      { kind: 'goto', x: 0, z: -192, r: 12, text: 'Hit the Downtown job' },
-      { kind: 'survive', seconds: 60, text: 'Survive 60 seconds at 4 stars', setWanted: 4 },
-    ] },
-  { title: 'Air Support', brief: 'The PD air unit is over the bay. Drive it off.',
-    steps: [{ kind: 'heliDown', text: 'Drive off the PD air unit — shoot it until it retreats', setWanted: 4 }] },
-  { title: 'The Last Run', brief: 'One last job. The tower loot, the Marina, the whole PD behind you.',
-    steps: [
-      { kind: 'collect', x: 224, z: -224, r: 9, text: 'Grab the loot at Solmar Tower' },
-      { kind: 'deliver', x: -224, z: 224, r: 40, text: 'Run it to the Marina', needCar: true, setWanted: 5 },
-      { kind: 'survive', seconds: 30, text: 'Hold the Marina for 30 seconds' },
-    ] },
+const L = (x, z) => ({ x, z });
+
+export const MISSIONS = [
+  { title: 'Meet Mara', briefing: 'Mara is waiting at the Marina Pier. Go meet her.',
+    objectives: [{ type: 'goto', ...L(-320, -320), radius: 40, label: 'Go to the Marina Pier' }], nextIndex: 1 },
+  { title: 'Hot Wheels', briefing: 'You need wheels. Grab a car and cruise to Vice Beach.',
+    objectives: [
+      { type: 'enterCar', label: 'Get in a car' },
+      { type: 'goto', ...L(320, -320), radius: 40, label: 'Drive to Vice Beach', inCar: true },
+    ], nextIndex: 2 },
+  { title: 'First Blood', briefing: 'Bay Kings are shaking down the Marina. Clear 3 of them.',
+    objectives: [{ type: 'kill', kind: 'gang', count: 3, label: 'Clear the Bay Kings (0/3)' }], nextIndex: 3 },
+  { title: 'Cash Run', briefing: 'The crew needs cash. Rob any ATM — watch the cooldown.',
+    objectives: [{ type: 'robAtm', count: 1, label: 'Rob an ATM' }], nextIndex: 4 },
+  { title: 'The Getaway', briefing: 'The cops are onto you. Survive 45 seconds at 2 stars.',
+    objectives: [{ type: 'survive', seconds: 45, level: 2, label: 'Lose the cops (45s)' }], nextIndex: 5 },
+  { title: "Rico's Ride", briefing: "Rico needs a car at his garage. Deliver one, in one piece.",
+    objectives: [{ type: 'goto', ...L(-150, -150), radius: 40, label: "Deliver a car to Rico's Garage", inCar: true }], nextIndex: 6 },
+  { title: 'Bay Kings Turf', briefing: 'Take the fight to Little Havana. 5 Kings, including 2 enforcers.',
+    objectives: [{ type: 'kill', kind: 'mixed', count: 5, label: 'Clear the turf (0/5)' }], nextIndex: 7 },
+  { title: 'Midnight Delivery', briefing: 'A package for Calle Ocho Plaza. No questions, no stops.',
+    objectives: [{ type: 'goto', ...L(250, 250), radius: 40, label: 'Deliver to Calle Ocho Plaza' }], nextIndex: 8 },
+  { title: 'Heat Wave', briefing: 'Three stars and rising. Survive 60 seconds of full heat.',
+    objectives: [{ type: 'survive', seconds: 60, level: 3, label: 'Survive the heat (60s)' }], nextIndex: 9 },
+  { title: 'The Marina Heist', briefing: 'Two ATMs, one night. Hit them both, then get back to the Marina.',
+    objectives: [
+      { type: 'robAtm', count: 2, label: 'Rob 2 ATMs (0/2)' },
+      { type: 'goto', ...L(-320, -320), radius: 40, label: 'Get back to the Marina' },
+    ], nextIndex: 10 },
+  { title: 'Air Support', briefing: 'A police chopper is on you. Survive 60 seconds at 4 stars and drop 2 Kings.',
+    objectives: [
+      { type: 'survive', seconds: 60, level: 4, label: 'Survive the chopper (60s)' },
+      { type: 'kill', kind: 'gang', count: 2, label: 'Drop 2 Bay Kings (0/2)' },
+    ], nextIndex: 11 },
+  { title: 'The Last Run', briefing: 'One last job: run the Kings’ courier off the road, then vanish at the safehouse.',
+    objectives: [
+      { type: 'chase', label: 'Destroy the courier car' },
+      { type: 'goto', ...L(150, 150), radius: 40, label: 'Vanish at the safehouse' },
+    ], nextIndex: null },
 ];
 
-export class StoryArc {
-  constructor(world) {
-    this.world = world;
-    this.index = -1; // no mission yet
-    this.stepIdx = 0;
-    this.step = null;
-    this.nextTimer = 0;
-    this.nextIndex = -1; // which mission the 2.5s gap leads to
-    this.done = false;
-  }
-  get mission() {
-    return this.index >= 0 && this.index < MISSIONS.length ? MISSIONS[this.index] : null;
-  }
-  get count() {
-    return MISSIONS.length;
-  }
-  startMission(i) {
-    const w = this.world;
-    this.index = i;
-    this.stepIdx = 0;
-    this.nextIndex = -1;
-    const m = MISSIONS[i];
-    w.hud.banner(`MISSION ${i + 1}: ${m.title.toUpperCase()}`, m.brief);
-    w.sfx.pickup();
-    this.setupStep();
-  }
-  setupStep() {
-    const w = this.world;
-    const m = this.mission;
-    if (!m) return;
-    const def = m.steps[this.stepIdx];
-    const step = { ...def };
-    this.step = step;
-    if (step.setWanted !== undefined) w.wanted = step.setWanted;
-    if (step.spawnCar) {
-      const c = w.drive.createCar(step.spawnCar.type, w.player.x + step.spawnCar.dx, w.player.z + step.spawnCar.dz, 0);
-      step.spawnedCar = c;
-    }
-    if (step.kind === 'kill') {
-      step.enemies = [];
-      for (let i = 0; i < step.n; i++) {
-        step.enemies.push(w.combat.spawnEnemy('gang', step.sx + (i - 1) * 4, step.sz + (i % 2) * 4));
-      }
-    }
-    if (step.kind === 'collect') {
-      w.combat.spawnPickup('cash', step.x, step.z, 150);
-    }
-    if (step.kind === 'robAtm') step.base = w.stats.atmRobs || 0;
-    if (step.kind === 'heliDown') step.base = w.stats.heliDowns || 0;
-    if (step.kind === 'survive') step.t = step.seconds;
-    w.hud.setObjective(this.objectiveText());
-  }
-  objectiveText() {
-    const step = this.step;
-    if (!step) return '';
-    if (step.kind === 'kill') {
-      const dead = (step.enemies || []).filter((e) => e.dead).length;
-      return `${step.text} (${dead}/${step.n})`;
-    }
-    return step.text;
-  }
-  currentObjective() {
-    const w = this.world;
-    const step = this.step;
-    if (!step || this.done) return null;
-    const text = this.objectiveText();
-    if (step.kind === 'goto' || step.kind === 'collect' || step.kind === 'deliver') {
-      return { x: step.x, z: step.z, text };
-    }
-    if (step.kind === 'kill') return { x: step.sx, z: step.sz, text };
-    if (step.kind === 'enterCar') {
-      if (step.spawnedCar && !step.spawnedCar.dead) return { x: step.spawnedCar.x, z: step.spawnedCar.z, text };
-      const car = w.drive.nearestCar(w.player.x, w.player.z, 200);
-      if (car) return { x: car.x, z: car.z, text };
-      return { x: w.player.x, z: w.player.z, text };
-    }
-    if (step.kind === 'robAtm') {
-      let best = null;
-      let bestD = Infinity;
-      let anyBest = null;
-      let anyBestD = Infinity;
-      w.layout.atms.forEach((a, i) => {
-        const d = Math.hypot(a.x - w.player.x, a.z - w.player.z);
-        if (d < anyBestD) {
-          anyBestD = d;
-          anyBest = a;
-        }
-        // Prefer an ATM that is not on cooldown; if every ATM is still
-        // cooling down, fall back to the nearest one so the player at
-        // least walks there and waits for it instead of standing still.
-        if (w.crime && (w.crime.atmCooldown.get(i) || 0) > 0) return;
-        if (d < bestD) {
-          bestD = d;
-          best = a;
-        }
-      });
-      const pick = best || anyBest;
-      return pick ? { x: pick.x, z: pick.z, text } : null;
-    }
-    if (step.kind === 'heliDown') {
-      if (w.heli) return { x: w.heli.x, z: w.heli.z, text };
-      return { x: w.player.x, z: w.player.z, text };
-    }
-    return { x: w.player.x, z: w.player.z, text }; // survive: no marker
-  }
-  stepDone() {
-    const w = this.world;
-    const p = w.player;
-    const step = this.step;
-    if (!step) return false;
-    switch (step.kind) {
-      case 'goto':
-      case 'collect':
-      case 'deliver': {
-        if (step.needCar && !p.inCar) return false;
-        return Math.hypot(p.x - step.x, p.z - step.z) < step.r;
-      }
-      case 'enterCar':
-        return !!p.inCar && (!step.type || p.inCar.type === step.type);
-      case 'kill':
-        return (step.enemies || []).every((e) => e.dead);
-      case 'robAtm':
-        return (w.stats.atmRobs || 0) > step.base;
-      case 'survive':
-        return step.t <= 0;
-      case 'heliDown':
-        return (w.stats.heliDowns || 0) > step.base;
-      default:
-        return false;
+export function startMission(world, index) {
+  const def = MISSIONS[index];
+  const ms = world.missions;
+  ms.index = index;
+  ms.title = def.title;
+  ms.briefing = def.briefing;
+  ms.objectives = def.objectives.map((o) => ({ ...o, done: false, timer: o.seconds ?? 0 }));
+  ms.objIndex = 0;
+  ms.killsAtStart = ms.kills || 0;
+  ms.robsAtStart = ms.robs || 0;
+  ms.targetCar = null;
+  // onStart hooks.
+  const first = ms.objectives[0];
+  if (first && first.type === 'kill') {
+    if (first.kind === 'mixed') {
+      spawnEnemies(world, 'gang', 3, world.player.x + 30, world.player.z);
+      spawnEnemies(world, 'king', 2, world.player.x - 30, world.player.z + 20, world.rng);
+    } else {
+      spawnEnemies(world, first.kind, first.count + 1, world.player.x + 30, world.player.z, world.rng);
     }
   }
-  update(dt) {
-    const w = this.world;
-    if (this.done || !w.started || w.ended) return;
-    if (this.index < 0) {
-      // Between missions: count down to the NEXT one, never back to 1.
-      if (this.done) return;
-      this.nextTimer -= dt;
-      if (this.nextTimer <= 0) this.startMission(this.nextIndex >= 0 ? this.nextIndex : 0);
-      return;
+  if (first && first.type === 'survive') {
+    world.player.heat = Math.max(world.player.heat || 0, first.level);
+  }
+  if (first && first.type === 'chase') {
+    const car = createCar('sport', world.player.x + 60, world.player.z + 40, 0, 'courier');
+    car.hp = 120; car.maxHp = 120;
+    world.cars.push(car);
+    ms.targetCar = car;
+  }
+  world.feed.push(`MISSION: ${def.title} — ${def.briefing}`);
+}
+
+export function currentObjective(world) {
+  const ms = world.missions;
+  return ms.objectives[ms.objIndex] || null;
+}
+
+export function objectiveLabel(world) {
+  const o = currentObjective(world);
+  if (!o) return 'Story complete';
+  if (o.type === 'kill') {
+    const done = (world.missions.kills || 0) - world.missions.killsAtStart;
+    return o.label.replace(/\(\d+\/\d+\)/, `(${Math.min(done, o.count)}/${o.count})`);
+  }
+  if (o.type === 'robAtm') {
+    const done = (world.missions.robs || 0) - world.missions.robsAtStart;
+    return o.label.replace(/\(\d+\/\d+\)/, `(${Math.min(done, o.count)}/${o.count})`);
+  }
+  if (o.type === 'survive') {
+    return `${o.label.split(' (')[0]} (${Math.ceil(o.timer)}s)`;
+  }
+  return o.label;
+}
+
+// Advance the mission state machine. Returns 'missionDone' | 'storyDone' | null.
+export function stepMissions(world, dt) {
+  const ms = world.missions;
+  if (ms.done) return null;
+  const o = currentObjective(world);
+  if (!o) return completeMission(world);
+  const p = world.player;
+  let done = false;
+  if (o.type === 'goto') {
+    const d = Math.hypot(p.x - o.x, p.z - o.z);
+    done = d <= o.radius && (!o.inCar || p.inCar);
+  } else if (o.type === 'enterCar') {
+    done = !!p.inCar;
+  } else if (o.type === 'kill') {
+    const kills = (ms.kills || 0) - ms.killsAtStart;
+    done = kills >= o.count;
+    // Top up enemies if the player cleared the first wave early.
+    if (!done && world.enemies.length === 0 && kills < o.count) {
+      spawnEnemies(world, o.kind === 'mixed' ? 'gang' : o.kind, 2, p.x + 25, p.z, world.rng);
     }
-    const step = this.step;
-    if (!step) return;
-    if (step.kind === 'survive') step.t -= dt;
-    if (this.stepDone()) {
-      w.sfx.cash();
-      this.stepIdx++;
-      const m = this.mission;
-      if (this.stepIdx >= m.steps.length) {
-        this.completeMission();
-      } else {
-        this.setupStep();
-      }
+  } else if (o.type === 'robAtm') {
+    const robs = (ms.robs || 0) - ms.robsAtStart;
+    done = robs >= o.count;
+  } else if (o.type === 'survive') {
+    // Pin the heat at the required level while surviving: without this, heat decay
+    // would drop wanted below the level and the timer would stall forever.
+    p.heat = Math.max(p.heat || 0, o.level);
+    if ((p.wanted || 0) >= o.level) o.timer -= dt;
+    done = o.timer <= 0;
+  } else if (o.type === 'chase') {
+    const t = ms.targetCar;
+    done = !t || t.hp <= 0;
+    if (!done && t) {
+      // The courier flees from the player.
+      const dx = t.x - p.x, dz = t.z - p.z;
+      const d = Math.hypot(dx, dz);
+      t.heading = Math.atan2(dx, dz);
+      t.speed = Math.min(30, t.speed + 8 * dt);
+      t.x += Math.sin(t.heading) * t.speed * dt;
+      t.z += Math.cos(t.heading) * t.speed * dt;
     }
   }
-  completeMission() {
-    const w = this.world;
-    const i = this.index;
-    const reward = TUNE.missions.reward[i] || 500;
-    w.cash += reward;
-    w.stats.missionsDone = (w.stats.missionsDone || 0) + 1;
-    const m = this.mission;
-    w.hud.banner('MISSION COMPLETE', `${m.title} — $${reward.toLocaleString('en-US')}`);
-    w.hud.toast(`Mission complete: ${m.title} (+$${reward})`);
-    w.persist.save();
-    if (i + 1 >= MISSIONS.length) {
-      this.done = true;
-      this.index = -1;
-      this.step = null;
-      w.storyComplete = true;
-      w.cash += 2500;
-      w.hud.banner('STORY COMPLETE', 'Solmar Bay is yours, Rook. +$2,500 bonus.');
-      return;
+  if (!done) return null;
+  o.done = true;
+  ms.objIndex += 1;
+  if (ms.objIndex < ms.objectives.length) {
+    const next = ms.objectives[ms.objIndex];
+    if (next.type === 'kill') {
+      spawnEnemies(world, next.kind === 'mixed' ? 'king' : next.kind, next.count + 1, p.x + 30, p.z, world.rng);
     }
-    this.index = -1;
-    this.step = null;
-    this.nextIndex = i + 1;
-    this.nextTimer = 2.5;
+    if (next.type === 'survive') p.heat = Math.max(p.heat || 0, next.level);
+    if (next.type === 'chase') {
+      const car = createCar('sport', p.x + 60, p.z + 40, 0, 'courier');
+      car.hp = 120; car.maxHp = 120;
+      world.cars.push(car);
+      ms.targetCar = car;
+    }
+    return null;
   }
-  // A bust/waste restarts the current mission from its first step.
-  resetCurrent() {
-    if (this.done || this.index < 0) return;
-    this.stepIdx = 0;
-    this.setupStep();
+  return completeMission(world);
+}
+
+function completeMission(world) {
+  const ms = world.missions;
+  const reward = MISSION_REWARD[ms.index] ?? 500;
+  world.player.cash += reward;
+  world.missionsDone += 1;
+  sfx.mission();
+  world.feed.push(`Mission complete: ${ms.title} — +$${reward}.`);
+  const next = MISSIONS[ms.index].nextIndex;
+  if (next === null || next === undefined) {
+    ms.done = true;
+    world.storyComplete = true;
+    world.feed.push('STORY COMPLETE — Solmar Bay is yours.');
+    return 'storyDone';
   }
+  startMission(world, next);
+  return 'missionDone';
 }

@@ -1,144 +1,33 @@
-/* Solmar Bay: Heatwave — HUD styling. Dark glass panels, amber accent,
-   a condensed display stack. Everything lives inside #hud, which never
-   captures the pointer except on the overlay buttons. Overlays are
-   toggled with the `hidden` attribute, so [hidden] must win. */
-html, body {
-  margin: 0;
-  height: 100%;
-  overflow: hidden;
-  background: #0b0e14;
-  font-family: "Arial Narrow", "Helvetica Neue Condensed", Arial, sans-serif;
-  color: #f2ede3;
-}
+/* Solmar Bay: Heatwave — diegetic HUD. Dark glass panels, amber accents, readable at a glance. */
+html, body { margin: 0; height: 100%; overflow: hidden; background: #0c1226; font-family: 'Segoe UI', system-ui, sans-serif; }
 #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
-#hud { position: fixed; inset: 0; pointer-events: none; z-index: 5; }
+#hud { position: fixed; inset: 0; pointer-events: none; color: #fff; text-shadow: 0 1px 3px rgba(0,0,0,.8); z-index: 5; }
+#hud-minimap { position: absolute; top: 12px; left: 12px; border: 2px solid rgba(255,255,255,.75); border-radius: 6px; background: #101418; box-shadow: 0 2px 10px rgba(0,0,0,.5); }
+#hud-top { position: absolute; top: 12px; right: 14px; text-align: right; }
+#hud-stars { font-size: 26px; letter-spacing: 2px; color: #ffd23a; }
+#hud-cash { font-size: 30px; font-weight: 800; color: #7dff8a; }
+#hud-clock { font-size: 16px; color: #cfe0ff; }
+#hud-bars { position: absolute; top: 96px; right: 14px; width: 210px; }
+#hud-bars .bar { height: 18px; background: rgba(0,0,0,.55); border: 1px solid rgba(255,255,255,.5); border-radius: 4px; margin-bottom: 6px; overflow: hidden; }
+#hud-hp, #hud-armor { height: 100%; font-size: 11px; line-height: 18px; padding-left: 6px; white-space: nowrap; }
+#hud-hp { background: #2fae4e; width: 100%; }
+#hud-armor { background: #3a7bd5; width: 0%; }
+#hud-info { position: absolute; top: 196px; left: 12px; font-size: 17px; font-weight: 700; }
+#hud-district { color: #ffe9a8; }
+#hud-radio { color: #9fd8ff; margin-top: 2px; }
+#hud-mission { position: absolute; left: 50%; transform: translateX(-50%); top: 12px; font-size: 17px; font-weight: 800; background: rgba(0,0,0,.55); padding: 6px 14px; border-radius: 6px; border: 1px solid rgba(255,255,255,.35); }
+#hud-objective { position: absolute; left: 50%; transform: translateX(-50%); bottom: 64px; font-size: 18px; font-weight: 700; background: rgba(0,0,0,.6); padding: 8px 16px; border-radius: 6px; border: 1px solid #ffd23a; }
+#hud-feed { position: absolute; left: 50%; transform: translateX(-50%); bottom: 110px; font-size: 15px; color: #ffe9a8; background: rgba(0,0,0,.45); padding: 4px 12px; border-radius: 5px; max-width: 70%; text-align: center; }
+#hud-keys { position: absolute; left: 50%; transform: translateX(-50%); bottom: 10px; font-size: 12px; color: rgba(255,255,255,.75); background: rgba(0,0,0,.4); padding: 3px 10px; border-radius: 4px; white-space: nowrap; }
+#garage-panel { position: fixed; right: 14px; top: 200px; width: 300px; background: rgba(10,14,22,.92); border: 2px solid #d8a020; border-radius: 8px; padding: 12px; color: #fff; z-index: 8; font-size: 14px; }
+#garage-panel button { margin: 4px 4px 0 0; padding: 6px 10px; background: #d8a020; border: none; border-radius: 4px; font-weight: 700; cursor: pointer; }
+#garage-panel button:hover { background: #ffd23a; }
+#title-screen, #pause-screen { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: linear-gradient(160deg, rgba(12,18,38,.82), rgba(60,20,40,.78)); z-index: 10; }
+.title-card { text-align: center; color: #fff; padding: 30px 50px; }
+.title-card h1 { font-size: 64px; margin: 0; letter-spacing: 6px; color: #ffd23a; text-shadow: 0 4px 0 #a33, 0 8px 24px rgba(0,0,0,.6); }
+.title-card h2 { font-size: 34px; margin: 0 0 12px; letter-spacing: 12px; color: #ff6a5e; }
+.title-card p { font-size: 17px; margin: 8px 0; }
+.title-card .press { font-size: 20px; font-weight: 800; color: #7dff8a; animation: pulse 1.4s infinite; }
+.title-card .sub { font-size: 13px; color: rgba(255,255,255,.75); }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .45; } }
 #status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-
-/* Top-left: district, radio, clock. */
-.hud-tl { position: absolute; top: 14px; left: 14px; text-shadow: 0 2px 4px rgba(0, 0, 0, 0.8); }
-#hud-district { font-size: 17px; font-weight: 800; color: #ffb347; text-transform: uppercase; letter-spacing: 1px; }
-#hud-radio { font-size: 14px; font-weight: 700; color: #8fd3ff; }
-#hud-clock { font-size: 15px; font-weight: 700; color: #f2ede3; }
-
-/* Top-right: wanted stars + cash. */
-.hud-tr { position: absolute; top: 14px; right: 14px; text-align: right; text-shadow: 0 2px 4px rgba(0, 0, 0, 0.8); }
-#hud-stars { font-size: 28px; letter-spacing: 2px; color: #ffd23e; line-height: 1; }
-#hud-stars.hot { color: #ff5a3a; }
-#hud-cash { font-size: 28px; font-weight: 800; color: #7dff9a; line-height: 1.15; }
-
-/* Top-centre: the current objective. */
-#hud-objective {
-  position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
-  max-width: 44vw; text-align: center;
-  background: rgba(8, 10, 16, 0.62);
-  border: 1px solid rgba(242, 237, 227, 0.25);
-  border-radius: 6px; padding: 7px 16px;
-  font-size: 17px; font-weight: 700; letter-spacing: 0.4px;
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
-}
-
-/* Bottom-left: the minimap + speed. */
-.hud-bl { position: absolute; left: 14px; bottom: 16px; }
-#hud-minimap {
-  display: block; width: 190px; height: 190px;
-  border: 2px solid rgba(242, 237, 227, 0.55);
-  border-radius: 6px;
-  background: rgba(8, 10, 16, 0.55);
-  box-shadow: 0 2px 14px rgba(0, 0, 0, 0.55);
-}
-#hud-speed { font-size: 16px; font-weight: 800; color: #f2ede3; text-shadow: 0 2px 4px #000; margin-top: 4px; }
-
-/* Bottom-right: health + armor bars + weapon. */
-.hud-br { position: absolute; right: 14px; bottom: 16px; width: 240px; text-align: right; }
-.hud-bar {
-  position: relative; height: 12px; margin-top: 5px;
-  background: rgba(0, 0, 0, 0.6);
-  border: 1px solid rgba(242, 237, 227, 0.4);
-  border-radius: 3px; overflow: hidden;
-}
-.hud-bar > div { height: 100%; transition: width 0.15s linear; }
-#hud-health { background: linear-gradient(90deg, #2ecc71, #7dff9a); }
-#hud-armor { background: linear-gradient(90deg, #3498db, #8fd3ff); }
-.hud-bar > span {
-  position: absolute; right: 4px; top: 0;
-  font-size: 10px; font-weight: 800; letter-spacing: 1px; color: #fff;
-  text-shadow: 0 1px 2px #000; line-height: 12px;
-}
-#hud-weapon {
-  font-size: 20px; font-weight: 800; color: #f2ede3;
-  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.85); margin-top: 6px;
-}
-
-/* Bottom-centre: the hint line. */
-#hud-hints {
-  position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%);
-  background: rgba(8, 10, 16, 0.62);
-  border: 1px solid rgba(242, 237, 227, 0.22);
-  border-radius: 6px; padding: 6px 14px;
-  font-size: 15px; font-weight: 700;
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
-  white-space: nowrap;
-}
-
-/* Toast + banner. */
-#hud-toast {
-  position: absolute; top: 96px; left: 50%; transform: translateX(-50%);
-  background: rgba(8, 10, 16, 0.78);
-  border: 1px solid rgba(255, 179, 71, 0.6);
-  border-radius: 6px; padding: 8px 18px;
-  font-size: 17px; font-weight: 700; color: #ffd9a0;
-  opacity: 0; transition: opacity 0.25s;
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
-  white-space: nowrap;
-}
-#hud-toast.show { opacity: 1; }
-#hud-banner {
-  position: absolute; top: 34%; left: 50%; transform: translate(-50%, -50%);
-  text-align: center; width: 90vw;
-  opacity: 0; transition: opacity 0.3s;
-  text-shadow: 0 4px 18px rgba(0, 0, 0, 0.9);
-  pointer-events: none;
-}
-#hud-banner.show { opacity: 1; }
-#hud-banner-title { font-size: 54px; font-weight: 900; letter-spacing: 3px; color: #ffb347; text-transform: uppercase; }
-#hud-banner-sub { font-size: 20px; font-weight: 700; color: #f2ede3; margin-top: 4px; }
-
-/* Full-screen overlays: menu, pause, end, garage. */
-.hud-overlay {
-  position: absolute; inset: 0;
-  display: flex;
-  align-items: center; justify-content: center;
-  background: linear-gradient(180deg, rgba(5, 7, 12, 0.55), rgba(5, 7, 12, 0.86));
-  pointer-events: auto;
-}
-.hud-overlay[hidden] { display: none; }
-.hud-card {
-  width: min(560px, 92vw);
-  background: rgba(12, 15, 24, 0.92);
-  border: 1px solid rgba(255, 179, 71, 0.45);
-  border-radius: 12px;
-  padding: 28px 32px;
-  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.7);
-}
-.hud-card h1 {
-  margin: 0 0 4px; font-size: 40px; font-weight: 900; letter-spacing: 2px;
-  color: #ffb347; text-transform: uppercase; line-height: 1;
-}
-.hud-card p { margin: 8px 0; font-size: 16px; line-height: 1.5; color: #e8e2d4; }
-.hud-sub { font-size: 15px; color: #8fd3ff; font-weight: 700; letter-spacing: 1px; }
-.hud-keys { font-size: 14px; color: #c9c2b2; line-height: 1.7; }
-.hud-foot { font-size: 13px; color: #9a937f; }
-.hud-card button {
-  display: inline-block; margin: 14px 8px 0 0;
-  padding: 12px 26px; border: none; border-radius: 8px;
-  background: linear-gradient(180deg, #ffb347, #f08c1e);
-  color: #1a1206; font-size: 18px; font-weight: 900; letter-spacing: 1px;
-  cursor: pointer; text-transform: uppercase;
-  box-shadow: 0 4px 16px rgba(240, 140, 30, 0.45);
-}
-.hud-card button:hover { filter: brightness(1.12); }
-.hud-card button:disabled { background: rgba(242, 237, 227, 0.14); color: #9a937f; box-shadow: none; cursor: default; }
-#hud-garage-list { margin: 10px 0; font-size: 15px; line-height: 1.9; color: #e8e2d4; }
-.hud-garage-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.hud-garage-row button { margin: 0; padding: 6px 12px; font-size: 13px; }
-#hud-end-title { font-size: 46px; }

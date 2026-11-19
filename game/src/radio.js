@@ -1,116 +1,77 @@
-// radio.js — Solmar Bay: three procedural radio stations, no audio files.
-// A tiny step sequencer plays a bassline and a melody per station with
-// WebAudio oscillators. V switches station, the HUD shows the name.
-// If the browser has no audio (headless), the deck still tracks the
-// station so the game and the HUD keep working.
-import { TUNE } from './tuning.js';
+// RadioSystem: 3 procedural Web Audio stations, no samples, no network.
+// Each station is a step sequencer over a scale; the HUD shows the station name.
+// Key R (or radio.next()) switches. Safe when audio is suspended: it just stays silent.
+import { getAudio } from './audio.js';
 
-const SCALES = {
-  chill: [0, 3, 5, 7, 10],
-  drive: [0, 2, 3, 7, 8],
-  night: [0, 2, 5, 7, 10],
-};
-const ROOTS = { chill: 110, drive: 98, night: 82 };
+export const STATIONS = [
+  { name: 'SOLMAR FM', desc: 'synthwave', bpm: 112, wave: 'sawtooth', scale: [0, 3, 5, 7, 10], root: 110, bass: 55 },
+  { name: 'VICE 88', desc: 'funk', bpm: 96, wave: 'square', scale: [0, 3, 5, 6, 10], root: 98, bass: 49 },
+  { name: 'BAY TALK', desc: 'talk radio', bpm: 80, wave: 'triangle', scale: [0, 2, 4, 7, 9], root: 131, bass: 65 },
+];
 
-export class RadioDeck {
-  constructor() {
-    this.index = 0;
-    this.ctx = null;
-    this.master = null;
-    this.muted = false;
-    this.step = 0;
-    this.nextTime = 0;
-    this.timer = null;
-    this.playing = false;
-  }
-  get station() {
-    return TUNE.radio.stations[this.index];
-  }
-  get stationName() {
-    return this.station.name;
-  }
-  unlock() {
-    if (this.ctx) {
-      if (this.ctx.state === 'suspended') this.ctx.resume();
-      return;
-    }
-    try {
-      const AC = window.AudioContext || window.webkitAudioContext;
-      if (!AC) return;
-      this.ctx = new AC();
-      this.master = this.ctx.createGain();
-      this.master.gain.value = this.muted ? 0 : 0.14;
-      this.master.connect(this.ctx.destination);
-      this.start();
-    } catch {
-      // No audio: the deck still tracks the station.
-    }
-  }
-  start() {
-    if (this.playing || !this.ctx) return;
-    this.playing = true;
-    this.nextTime = this.ctx.currentTime + 0.1;
-    this.timer = setInterval(() => this.schedule(), 90);
-  }
-  stop() {
-    this.playing = false;
-    if (this.timer) clearInterval(this.timer);
-    this.timer = null;
-  }
-  setMuted(m) {
-    this.muted = m;
-    if (this.master && this.ctx) this.master.gain.setTargetAtTime(m ? 0 : 0.14, this.ctx.currentTime, 0.05);
-  }
-  next() {
-    this.index = (this.index + 1) % TUNE.radio.stations.length;
-    this.step = 0;
-    return this.stationName;
-  }
-  prev() {
-    this.index = (this.index - 1 + TUNE.radio.stations.length) % TUNE.radio.stations.length;
-    this.step = 0;
-    return this.stationName;
-  }
-  schedule() {
-    if (!this.ctx || !this.playing) return;
-    const st = this.station;
-    const spb = 60 / st.bpm / 4; // 16th notes
-    while (this.nextTime < this.ctx.currentTime + 0.25) {
-      const s = this.step % 16;
-      const bar = Math.floor(this.step / 16);
-      const scale = SCALES[st.mood];
-      const root = ROOTS[st.mood];
-      // Bass on beats 0, 4, 8, 12 (and a pickup on 14 for drive).
-      if (s % 4 === 0 || (st.mood === 'drive' && s === 14)) {
-        const deg = scale[(bar + (s === 0 ? 0 : 1)) % scale.length];
-        this.note(root * Math.pow(2, deg / 12), spb * 3.2, st.wave, 0.5);
-      }
-      // Sparse melody: a note every few steps, deterministic by step+bar.
-      const melSeed = (bar * 16 + s) % 7;
-      if (s % 2 === 0 && melSeed < 3) {
-        const deg = scale[(bar * 3 + s) % scale.length] + 12;
-        this.note(root * Math.pow(2, deg / 12), spb * 1.8, 'triangle', 0.16);
-      }
-      // Hat tick on off-beats for drive/night.
-      if (st.mood !== 'chill' && s % 2 === 1) {
-        this.note(6000, 0.02, 'square', 0.02);
-      }
-      this.nextTime += spb;
-      this.step++;
-    }
-  }
-  note(freq, dur, type, vol) {
-    if (!this.ctx) return;
-    const t = this.nextTime;
-    const o = this.ctx.createOscillator();
-    const g = this.ctx.createGain();
-    o.type = type;
-    o.frequency.value = freq;
-    g.gain.setValueAtTime(vol, t);
-    g.gain.exponentialRampToValueAtTime(0.001, t + dur);
-    o.connect(g);
-    g.connect(this.master);
-    o.start(t);
-    o.stop(t + dur + 0.02);
-  }
+export function createRadio() {
+  return {
+    index: 0, timer: null, step: 0, gainNode: null,
+    name() { return STATIONS[this.index].name; },
+    next() {
+      this.index = (this.index + 1) % STATIONS.length;
+      this.step = 0;
+      this.restart();
+      return this.name();
+    },
+    start() { this.restart(); },
+    stop() {
+      if (this.timer) { clearInterval(this.timer); this.timer = null; }
+    },
+    restart() {
+      this.stop();
+      const a = getAudio();
+      if (!a) return;
+      try {
+        if (!this.gainNode) {
+          this.gainNode = a.ctx.createGain();
+          this.gainNode.gain.value = 0.12;
+          this.gainNode.connect(a.master);
+        }
+        const st = STATIONS[this.index];
+        const stepMs = 60000 / st.bpm / 2;
+        this.timer = setInterval(() => this.playStep(a, st), stepMs);
+      } catch { /* radio is best-effort */ }
+    },
+    playStep(a, st) {
+      try {
+        if (a.ctx.state === 'suspended') return;
+        const t0 = a.ctx.currentTime;
+        const s = this.step;
+        this.step += 1;
+        // Bass on beats 0 and 2 of each bar.
+        if (s % 4 === 0 || s % 4 === 2) {
+          const o = a.ctx.createOscillator();
+          const g = a.ctx.createGain();
+          o.type = 'sine';
+          o.frequency.value = st.bass * (s % 8 === 4 ? 1.5 : 1);
+          g.gain.setValueAtTime(0.0001, t0);
+          g.gain.exponentialRampToValueAtTime(0.5, t0 + 0.02);
+          g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.32);
+          o.connect(g); g.connect(this.gainNode);
+          o.start(t0); o.stop(t0 + 0.36);
+        }
+        // Melody: pentatonic walk, deterministic-ish from step.
+        if (s % 2 === 0) {
+          const deg = [0, 2, 1, 4, 3, 2, 4, 1][Math.floor(s / 2) % 8];
+          const semi = st.scale[deg % st.scale.length] + 12 * Math.floor(deg / st.scale.length);
+          const freq = st.root * Math.pow(2, semi / 12) * 2;
+          const o = a.ctx.createOscillator();
+          const g = a.ctx.createGain();
+          o.type = st.wave;
+          o.frequency.value = freq;
+          g.gain.setValueAtTime(0.0001, t0);
+          g.gain.exponentialRampToValueAtTime(0.14, t0 + 0.02);
+          g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.22);
+          o.connect(g); g.connect(this.gainNode);
+          o.start(t0); o.stop(t0 + 0.26);
+        }
+      } catch { /* ignore audio errors */ }
+    },
+  };
 }

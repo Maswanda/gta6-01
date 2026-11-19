@@ -1,402 +1,315 @@
-// scene.js — Solmar Bay: the Three.js stage.
-// Owns the renderer, the camera, the lights, the sky and every mesh the
-// city is made of. Other modules ask it for car/ped/heli meshes and move
-// them; the stage never decides game logic, it only shows it.
+// Three.js scene: renderer, chase camera, day/night sky, ground texture, buildings,
+// landmarks, and one mesh group per entity (player, cars, peds, enemies, heli).
+// The simulation is 2D (x/z); this file only draws it. No network, no external assets.
 import * as THREE from 'three';
-import { TUNE } from './tuning.js';
+import { DAY_LENGTH, WORLD_HALF, CAR } from './tuning.js';
+import { districtAt } from './city.js';
 
-const DAY_SKY = new THREE.Color(0x7ec8e8);
-const GOLD_SKY = new THREE.Color(0xe8956a);
-const NIGHT_SKY = new THREE.Color(0x0a1226);
-const DAY_SUN = new THREE.Color(0xfff2d8);
-const GOLD_SUN = new THREE.Color(0xff9a4a);
+function groundTexture(city) {
+  const c = document.createElement('canvas');
+  c.width = 1024; c.height = 1024;
+  const g = c.getContext('2d');
+  const toPx = (v) => ((v + WORLD_HALF) / (WORLD_HALF * 2)) * 1024;
+  g.fillStyle = '#3a3f46'; g.fillRect(0, 0, 1024, 1024);
+  // District ground tints.
+  for (const d of city.districts) {
+    g.fillStyle = d.ground;
+    g.fillRect(toPx(d.x0), toPx(d.z0), toPx(d.x1) - toPx(d.x0), toPx(d.z1) - toPx(d.z0));
+  }
+  // Beach sand (Vice Beach east edge) + marina water (north-west corner).
+  g.fillStyle = '#d8c08a'; g.fillRect(toPx(330), toPx(-400), toPx(400) - toPx(330), toPx(0) - toPx(-400));
+  g.fillStyle = '#1e5a7a'; g.fillRect(toPx(-400), toPx(-400), toPx(-330) - toPx(-400), toPx(-260) - toPx(-400));
+  // Roads: dark asphalt with centre dashes.
+  g.fillStyle = '#22242a';
+  for (let i = -4; i <= 4; i += 1) {
+    g.fillRect(toPx(i * 100 - 7), 0, toPx(14) - toPx(0), 1024);
+    g.fillRect(0, toPx(i * 100 - 7), 1024, toPx(14) - toPx(0));
+  }
+  g.fillStyle = '#d8d8a0';
+  for (let i = -4; i <= 4; i += 1) {
+    for (let d = -380; d < 400; d += 40) {
+      g.fillRect(toPx(i * 100) - 2, toPx(d), 4, 12);
+      g.fillRect(toPx(d), toPx(i * 100) - 2, 12, 4);
+    }
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  return tex;
+}
 
-export class Stage3D {
-  constructor(canvas) {
-    this.canvas = canvas;
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
-    this.renderer.setSize(window.innerWidth, window.innerHeight);
-    this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x7ec8e8);
-    this.scene.fog = new THREE.Fog(0x7ec8e8, 120, 700);
-    this.camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.1, 2000);
-    this.camera.position.set(0, 40, 60);
-    this.sun = new THREE.DirectionalLight(0xfff2d8, 2.2);
-    this.sun.position.set(100, 160, 60);
-    this.scene.add(this.sun);
-    this.hemi = new THREE.HemisphereLight(0xbfd8ff, 0x3a3a2a, 0.9);
-    this.scene.add(this.hemi);
-    this.moon = new THREE.DirectionalLight(0x8fa8ff, 0.0);
-    this.moon.position.set(-80, 120, -40);
-    this.scene.add(this.moon);
-    this.buildingMats = [];
-    this.nightFactor = 0;
-    this.shake = 0;
-    this.camPos = new THREE.Vector3(0, 40, 60);
-    this.camLook = new THREE.Vector3(0, 0, 0);
-    addEventListener('resize', () => this.resize());
+function makeCarMesh(color, kind) {
+  const group = new THREE.Group();
+  const bodyMat = new THREE.MeshLambertMaterial({ color });
+  const body = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.7, 4.4), bodyMat);
+  body.position.y = 0.55;
+  group.add(body);
+  const cabin = new THREE.Mesh(
+    new THREE.BoxGeometry(1.9, 0.6, 2.2),
+    new THREE.MeshLambertMaterial({ color: 0x18202a }),
+  );
+  cabin.position.set(0, 1.15, -0.3);
+  group.add(cabin);
+  const wheelMat = new THREE.MeshLambertMaterial({ color: 0x111111 });
+  const wheelGeo = new THREE.CylinderGeometry(0.38, 0.38, 0.3, 10);
+  for (const [x, z] of [[-1.05, 1.5], [1.05, 1.5], [-1.05, -1.5], [1.05, -1.5]]) {
+    const w = new THREE.Mesh(wheelGeo, wheelMat);
+    w.rotation.z = Math.PI / 2;
+    w.position.set(x, 0.38, z);
+    group.add(w);
   }
-  resize() {
-    this.camera.aspect = window.innerWidth / window.innerHeight;
-    this.camera.updateProjectionMatrix();
-    this.renderer.setSize(window.innerWidth, window.innerHeight);
+  if (kind === 'police') {
+    const bar = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.18, 0.5), new THREE.MeshLambertMaterial({ color: 0x2233ff, emissive: 0x2233ff, emissiveIntensity: 0.7 }));
+    bar.position.set(0, 1.55, -0.3);
+    group.add(bar);
+    group.userData.lightBar = bar;
   }
-  // --- city meshes -------------------------------------------------------
-  buildCity(layout) {
-    const S = this.scene;
-    const half = layout.half;
-    // Water around the island city, so the bay reads from the edges.
-    const water = new THREE.Mesh(
-      new THREE.PlaneGeometry(2400, 2400),
-      new THREE.MeshLambertMaterial({ color: 0x1a5a7a }),
-    );
-    water.rotation.x = -Math.PI / 2;
-    water.position.y = -0.4;
-    S.add(water);
-    // Ground.
+  if (kind === 'taxi') {
+    const sign = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.25, 0.4), new THREE.MeshLambertMaterial({ color: 0xffe040, emissive: 0xaa8800 }));
+    sign.position.set(0, 1.55, -0.3);
+    group.add(sign);
+  }
+  return group;
+}
+
+function makePedMesh(color) {
+  const group = new THREE.Group();
+  const mat = new THREE.MeshLambertMaterial({ color });
+  const body = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.42, 1.1, 8), mat);
+  body.position.y = 0.85;
+  group.add(body);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.26, 8, 8), new THREE.MeshLambertMaterial({ color: 0xd8a880 }));
+  head.position.y = 1.65;
+  group.add(head);
+  return group;
+}
+
+function makeHeliMesh() {
+  const group = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.BoxGeometry(2.4, 1.4, 5.2), new THREE.MeshLambertMaterial({ color: 0x224488 }));
+  body.position.y = 0;
+  group.add(body);
+  const tail = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.5, 3.4), new THREE.MeshLambertMaterial({ color: 0x224488 }));
+  tail.position.set(0, 0.2, -4);
+  group.add(tail);
+  const rotor = new THREE.Mesh(new THREE.BoxGeometry(9, 0.08, 0.5), new THREE.MeshLambertMaterial({ color: 0x222222 }));
+  rotor.position.y = 1.0;
+  group.add(rotor);
+  group.userData.rotor = rotor;
+  const coneGeo = new THREE.ConeGeometry(6, 30, 16, 1, true);
+  const coneMat = new THREE.MeshBasicMaterial({ color: 0xfff2b0, transparent: true, opacity: 0.22, side: THREE.DoubleSide, depthWrite: false });
+  const cone = new THREE.Mesh(coneGeo, coneMat);
+  cone.position.y = -15;
+  cone.rotation.x = Math.PI;
+  group.add(cone);
+  group.userData.cone = cone;
+  const spot = new THREE.SpotLight(0xfff2b0, 60, 60, 0.35, 0.5, 1.2);
+  spot.position.set(0, 0, 0);
+  group.add(spot);
+  group.add(spot.target);
+  spot.target.position.set(0, -30, 0);
+  group.userData.spot = spot;
+  return group;
+}
+
+export function createScene(canvas) {
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x87b5d6);
+  scene.fog = new THREE.Fog(0x87b5d6, 220, 620);
+  const camera = new THREE.PerspectiveCamera(62, 800 / 450, 0.1, 1200);
+  const hemi = new THREE.HemisphereLight(0xbfd9ff, 0x3a3f46, 1.1);
+  scene.add(hemi);
+  const sun = new THREE.DirectionalLight(0xffe8c0, 2.2);
+  sun.position.set(120, 200, 60);
+  scene.add(sun);
+  const moon = new THREE.DirectionalLight(0x8aa8ff, 0.35);
+  moon.position.set(-80, 150, -100);
+  scene.add(moon);
+
+  let city = null;
+  const meshes = new Map(); // id -> THREE.Group
+  const camPos = new THREE.Vector3(0, 40, 60);
+  const camLook = new THREE.Vector3(0, 0, 0);
+
+  function buildCity(c) {
+    city = c;
     const ground = new THREE.Mesh(
-      new THREE.PlaneGeometry(layout.size + 40, layout.size + 40),
-      new THREE.MeshLambertMaterial({ color: 0x3d4a3a }),
+      new THREE.PlaneGeometry(WORLD_HALF * 2, WORLD_HALF * 2),
+      new THREE.MeshLambertMaterial({ map: groundTexture(c) }),
     );
     ground.rotation.x = -Math.PI / 2;
-    ground.position.y = 0;
-    S.add(ground);
-    // Roads: dark strips with a pale centre line.
-    const roadMat = new THREE.MeshLambertMaterial({ color: 0x2a2d33 });
-    const lineMat = new THREE.MeshBasicMaterial({ color: 0xd8c95a });
-    for (const c of layout.roadAt) {
-      const h = new THREE.Mesh(new THREE.PlaneGeometry(layout.size, TUNE.city.roadWidth), roadMat);
-      h.rotation.x = -Math.PI / 2;
-      h.position.set(0, 0.03, c);
-      S.add(h);
-      const v = new THREE.Mesh(new THREE.PlaneGeometry(TUNE.city.roadWidth, layout.size), roadMat);
-      v.rotation.x = -Math.PI / 2;
-      v.position.set(c, 0.03, 0);
-      S.add(v);
-      const hl = new THREE.Mesh(new THREE.PlaneGeometry(layout.size, 0.5), lineMat);
-      hl.rotation.x = -Math.PI / 2;
-      hl.position.set(0, 0.05, c);
-      S.add(hl);
-      const vl = new THREE.Mesh(new THREE.PlaneGeometry(0.5, layout.size), lineMat);
-      vl.rotation.x = -Math.PI / 2;
-      vl.position.set(c, 0.05, 0);
-      S.add(vl);
-    }
-    // Parks.
-    const parkMat = new THREE.MeshLambertMaterial({ color: 0x2e6b34 });
-    for (const p of layout.parks) {
-      const m = new THREE.Mesh(new THREE.PlaneGeometry(p.w, p.d), parkMat);
-      m.rotation.x = -Math.PI / 2;
-      m.position.set(p.x, 0.04, p.z);
-      S.add(m);
-    }
-    // Buildings.
-    for (const b of layout.buildings) {
-      const mat = new THREE.MeshLambertMaterial({ color: b.color, emissive: 0xffc860, emissiveIntensity: 0 });
-      this.buildingMats.push(mat);
-      const m = new THREE.Mesh(new THREE.BoxGeometry(b.w, b.h, b.d), mat);
+    scene.add(ground);
+    const boxGeo = new THREE.BoxGeometry(1, 1, 1);
+    for (const b of c.buildings) {
+      const m = new THREE.Mesh(boxGeo, new THREE.MeshLambertMaterial({ color: b.color }));
+      m.scale.set(b.w, b.h, b.d);
       m.position.set(b.x, b.h / 2, b.z);
-      S.add(m);
-      // A flat roof cap, slightly lighter.
-      const cap = new THREE.Mesh(
-        new THREE.BoxGeometry(b.w + 0.4, 0.6, b.d + 0.4),
-        new THREE.MeshLambertMaterial({ color: 0x222222 }),
-      );
-      cap.position.set(b.x, b.h + 0.3, b.z);
-      S.add(cap);
+      scene.add(m);
     }
-    // Landmarks.
-    for (const l of layout.landmarks) {
-      this.buildLandmark(l);
+    // Landmarks: taller, coloured blocks with a floating label colour.
+    const lmColors = { garage: 0xd8a020, safehouse: 0x20a060, hospital: 0xe8e8e8, policeHq: 0x2040c0, marina: 0x2080c0, beach: 0xe0c080, plaza: 0xc06040, tower: 0x404860 };
+    for (const key of Object.keys(c.landmarks)) {
+      const lm = c.landmarks[key];
+      const h = key === 'tower' ? 85 : 14;
+      const m = new THREE.Mesh(boxGeo, new THREE.MeshLambertMaterial({ color: lmColors[key] ?? 0x888888 }));
+      m.scale.set(22, h, 22);
+      m.position.set(lm.x, h / 2, lm.z);
+      scene.add(m);
     }
-    // ATMs: dark kiosks with a glowing screen.
-    const atmMat = new THREE.MeshLambertMaterial({ color: 0x1a2a3a });
-    const screenMat = new THREE.MeshBasicMaterial({ color: 0x39d0c0 });
-    for (const a of layout.atms) {
-      const kiosk = new THREE.Mesh(new THREE.BoxGeometry(2.2, 2.6, 1.2), atmMat);
-      kiosk.position.set(a.x, 1.3, a.z);
-      S.add(kiosk);
-      const screen = new THREE.Mesh(new THREE.PlaneGeometry(1.4, 0.9), screenMat);
-      screen.position.set(a.x, 1.7, a.z + 0.65);
-      S.add(screen);
+    // ATMs: small green kiosks.
+    for (const atm of c.atms) {
+      const m = new THREE.Mesh(boxGeo, new THREE.MeshLambertMaterial({ color: 0x18a048, emissive: 0x0a5a28, emissiveIntensity: 0.5 }));
+      m.scale.set(2, 3, 1.4);
+      m.position.set(atm.x, 1.5, atm.z);
+      scene.add(m);
     }
-    // Garage forecourt + safehouse marker are placed by their modules;
-    // the stage only marks the ground here.
-    const mark = (x, z, color) => {
-      const m = new THREE.Mesh(
-        new THREE.PlaneGeometry(16, 16),
-        new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.35 }),
-      );
-      m.rotation.x = -Math.PI / 2;
-      m.position.set(x, 0.06, z);
-      S.add(m);
-    };
-    mark(layout.places.garage.x, layout.places.garage.z, 0x39d0c0);
-    mark(layout.places.safehouse.x, layout.places.safehouse.z, 0x7ad03a);
   }
-  buildLandmark(l) {
-    const S = this.scene;
-    if (l.kind === 'lighthouse') {
-      const base = new THREE.Mesh(
-        new THREE.CylinderGeometry(4, 6, 42, 12),
-        new THREE.MeshLambertMaterial({ color: 0xf2ead8 }),
-      );
-      base.position.set(l.x, 21, l.z);
-      S.add(base);
-      const band = new THREE.Mesh(
-        new THREE.CylinderGeometry(4.2, 4.2, 6, 12),
-        new THREE.MeshLambertMaterial({ color: 0xd83a3a }),
-      );
-      band.position.set(l.x, 30, l.z);
-      S.add(band);
-      const lamp = new THREE.Mesh(
-        new THREE.SphereGeometry(2.2, 12, 8),
-        new THREE.MeshBasicMaterial({ color: 0xffe9a0 }),
-      );
-      lamp.position.set(l.x, 43, l.z);
-      S.add(lamp);
-    } else if (l.kind === 'tower') {
-      const mat = new THREE.MeshLambertMaterial({ color: 0x2a3a4a, emissive: 0xffc860, emissiveIntensity: 0 });
-      this.buildingMats.push(mat);
-      const m = new THREE.Mesh(new THREE.BoxGeometry(26, 120, 26), mat);
-      m.position.set(l.x, 60, l.z);
-      S.add(m);
-      const tip = new THREE.Mesh(
-        new THREE.BoxGeometry(6, 10, 6),
-        new THREE.MeshBasicMaterial({ color: 0xff5a3a }),
-      );
-      tip.position.set(l.x, 125, l.z);
-      S.add(tip);
-    } else if (l.kind === 'pier') {
-      const deck = new THREE.Mesh(
-        new THREE.BoxGeometry(10, 1.2, 90),
-        new THREE.MeshLambertMaterial({ color: 0x8a6a4a }),
-      );
-      deck.position.set(l.x, 1.2, l.z);
-      S.add(deck);
-      for (let i = 0; i < 5; i++) {
-        const post = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.5, 0.5, 3, 6),
-          new THREE.MeshLambertMaterial({ color: 0x5a4a3a }),
-        );
-        post.position.set(l.x - 4, 0.5, l.z - 36 + i * 18);
-        S.add(post);
-        const post2 = post.clone();
-        post2.position.x = l.x + 4;
-        S.add(post2);
+
+  function getMesh(id, make) {
+    let m = meshes.get(id);
+    if (!m) {
+      m = make();
+      meshes.set(id, m);
+      scene.add(m);
+    }
+    return m;
+  }
+
+  function sync(world, dt) {
+    // Day/night: sun angle from dayTime, sky + light lerp.
+    const dayFrac = (world.dayTime % DAY_LENGTH) / DAY_LENGTH; // 0=dawn, 0.25=noon, 0.5=dusk, 0.75=midnight
+    const sunH = Math.sin(dayFrac * Math.PI * 2);
+    const isDay = sunH > -0.08;
+    const skyDay = new THREE.Color(0x87b5d6);
+    const skyNight = new THREE.Color(0x0c1226);
+    const skyDusk = new THREE.Color(0xe08a4a);
+    let sky;
+    if (sunH > 0.25) sky = skyDay;
+    else if (sunH < -0.25) sky = skyNight;
+    else sky = skyDusk;
+    scene.background = sky;
+    scene.fog.color = sky;
+    sun.intensity = isDay ? 2.2 : 0.12;
+    moon.intensity = isDay ? 0.05 : 0.5;
+    sun.position.set(Math.cos(dayFrac * Math.PI * 2) * 200, Math.max(20, sunH * 220), 80);
+    hemi.intensity = isDay ? 1.1 : 0.45;
+
+    // Player.
+    const p = world.player;
+    if (p.inCar) {
+      const car = world.cars.find((c) => c.id === p.inCar);
+      if (car) {
+        const m = getMesh('player-car', () => makeCarMesh(CAR.kinds[car.kind].color, car.kind));
+        m.position.set(car.x, 0, car.z);
+        m.rotation.y = car.heading;
       }
-    } else if (l.kind === 'observatory') {
-      const base = new THREE.Mesh(
-        new THREE.CylinderGeometry(9, 11, 12, 12),
-        new THREE.MeshLambertMaterial({ color: 0xe8e2d0 }),
-      );
-      base.position.set(l.x, 6, l.z);
-      S.add(base);
-      const dome = new THREE.Mesh(
-        new THREE.SphereGeometry(8, 16, 10, 0, Math.PI * 2, 0, Math.PI / 2),
-        new THREE.MeshLambertMaterial({ color: 0xd8d2c0 }),
-      );
-      dome.position.set(l.x, 12, l.z);
-      S.add(dome);
+    } else {
+      const m = getMesh('player', () => makePedMesh(0x2a9a5a));
+      m.position.set(p.x, 0, p.z);
+      m.rotation.y = p.heading;
     }
-  }
-  // --- vehicle / character meshes ----------------------------------------
-  makeCar(color, kind = 'sedan') {
-    const g = new THREE.Group();
-    const bodyMat = new THREE.MeshLambertMaterial({ color });
-    const body = new THREE.Mesh(new THREE.BoxGeometry(2.1, 0.75, 4.4), bodyMat);
-    body.position.y = 0.65;
-    g.add(body);
-    const cabin = new THREE.Mesh(
-      new THREE.BoxGeometry(1.8, 0.65, 2.2),
-      new THREE.MeshLambertMaterial({ color: 0x1a2530 }),
-    );
-    cabin.position.set(0, 1.3, -0.2);
-    g.add(cabin);
-    const wheelGeo = new THREE.CylinderGeometry(0.42, 0.42, 0.35, 10);
-    const wheelMat = new THREE.MeshLambertMaterial({ color: 0x111111 });
-    const wheels = [];
-    for (const [wx, wz] of [[-1.05, 1.45], [1.05, 1.45], [-1.05, -1.45], [1.05, -1.45]]) {
-      const w = new THREE.Mesh(wheelGeo, wheelMat);
-      w.rotation.z = Math.PI / 2;
-      w.position.set(wx, 0.42, wz);
-      g.add(w);
-      wheels.push(w);
+    // Cars.
+    const seen = new Set(['player', 'player-car']);
+    for (const car of world.cars) {
+      if (car.id === p.inCar) { seen.add('player-car'); continue; }
+      const id = `car-${car.id}`;
+      seen.add(id);
+      const kind = car.driver === 'police' ? 'police' : car.kind;
+      const m = getMesh(id, () => makeCarMesh(CAR.kinds[car.kind].color, kind));
+      m.position.set(car.x, 0, car.z);
+      m.rotation.y = car.heading;
+      if (m.userData.lightBar) m.userData.lightBar.material.emissiveIntensity = (world.elapsed % 0.6 < 0.3) ? 1.2 : 0.1;
     }
-    const headMat = new THREE.MeshBasicMaterial({ color: 0xfff2b0 });
-    for (const hx of [-0.7, 0.7]) {
-      const h = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.2, 0.1), headMat);
-      h.position.set(hx, 0.7, 2.22);
-      g.add(h);
+    // Peds.
+    for (const ped of world.peds) {
+      const id = `ped-${ped.id}`;
+      seen.add(id);
+      const m = getMesh(id, () => makePedMesh(ped.color));
+      m.position.set(ped.x, 0, ped.z);
+      m.rotation.y = ped.heading;
     }
-    const tailMat = new THREE.MeshBasicMaterial({ color: 0xff2a2a });
-    for (const hx of [-0.7, 0.7]) {
-      const t = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.2, 0.1), tailMat);
-      t.position.set(hx, 0.7, -2.22);
-      g.add(t);
+    // Enemies.
+    for (const e of world.enemies) {
+      const id = `enemy-${e.id}`;
+      seen.add(id);
+      const m = getMesh(id, () => makePedMesh(e.kind === 'king' ? 0x8a1020 : 0x303030));
+      m.position.set(e.x, 0, e.z);
+      m.rotation.y = e.heading;
+      m.scale.setScalar(e.kind === 'king' ? 1.25 : 1);
     }
-    if (kind === 'truck') {
-      const bed = new THREE.Mesh(
-        new THREE.BoxGeometry(2.0, 1.1, 2.4),
-        new THREE.MeshLambertMaterial({ color: 0x4a5a6a }),
-      );
-      bed.position.set(0, 1.4, -1.0);
-      g.add(bed);
+    // Bullets (tracers).
+    for (const b of world.bullets) {
+      const id = `bullet-${b.id}`;
+      seen.add(id);
+      const m = getMesh(id, () => {
+        const g = new THREE.Group();
+        const s = new THREE.Mesh(new THREE.SphereGeometry(0.22, 6, 6), new THREE.MeshBasicMaterial({ color: 0xffe040 }));
+        g.add(s);
+        return g;
+      });
+      m.position.set(b.x, 1.2, b.z);
     }
-    g.userData.wheels = wheels;
-    g.userData.bodyMat = bodyMat;
-    this.scene.add(g);
-    return g;
-  }
-  makeCopCar() {
-    const g = this.makeCar(0x1a2a3a, 'sedan');
-    const barMat = new THREE.MeshBasicMaterial({ color: 0x2a5aff });
-    const bar = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.22, 0.5), barMat);
-    bar.position.set(0, 1.75, -0.2);
-    g.add(bar);
-    const bar2 = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.22, 0.5), new THREE.MeshBasicMaterial({ color: 0xff2a2a }));
-    bar2.position.set(0, 1.75, -0.2);
-    bar2.visible = false;
-    g.add(bar2);
-    g.userData.lightBarA = bar;
-    g.userData.lightBarB = bar2;
-    return g;
-  }
-  makePed(color) {
-    const g = new THREE.Group();
-    const body = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.42, 0.5, 1.1, 8),
-      new THREE.MeshLambertMaterial({ color }),
-    );
-    body.position.y = 0.95;
-    g.add(body);
-    const head = new THREE.Mesh(
-      new THREE.SphereGeometry(0.32, 10, 8),
-      new THREE.MeshLambertMaterial({ color: 0xd8a880 }),
-    );
-    head.position.y = 1.75;
-    g.add(head);
-    const legMat = new THREE.MeshLambertMaterial({ color: 0x2a2a3a });
-    const legs = [];
-    for (const lx of [-0.2, 0.2]) {
-      const leg = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.7, 0.22), legMat);
-      leg.position.set(lx, 0.35, 0);
-      g.add(leg);
-      legs.push(leg);
+    // Helicopter.
+    if (world.heli.active) {
+      const m = getMesh('heli', makeHeliMesh);
+      m.position.set(world.heli.x, world.heli.y, world.heli.z);
+      m.rotation.y = world.heli.heading;
+      if (m.userData.rotor) m.userData.rotor.rotation.y += dt * 22;
+      seen.add('heli');
     }
-    g.userData.legs = legs;
-    this.scene.add(g);
-    return g;
-  }
-  makeHeli() {
-    const g = new THREE.Group();
-    const body = new THREE.Mesh(
-      new THREE.BoxGeometry(2.6, 1.8, 5.2),
-      new THREE.MeshLambertMaterial({ color: 0x1a2a3a }),
-    );
-    body.position.y = 0;
-    g.add(body);
-    const glass = new THREE.Mesh(
-      new THREE.BoxGeometry(2.2, 0.9, 1.4),
-      new THREE.MeshLambertMaterial({ color: 0x2a4a6a }),
-    );
-    glass.position.set(0, 0.3, 2.2);
-    g.add(glass);
-    const tail = new THREE.Mesh(
-      new THREE.BoxGeometry(0.7, 0.7, 4.6),
-      new THREE.MeshLambertMaterial({ color: 0x1a2a3a }),
-    );
-    tail.position.set(0, 0.2, -4.4);
-    g.add(tail);
-    const rotor = new THREE.Mesh(
-      new THREE.BoxGeometry(11, 0.12, 0.5),
-      new THREE.MeshLambertMaterial({ color: 0x111111 }),
-    );
-    rotor.position.y = 1.15;
-    g.add(rotor);
-    const skidMat = new THREE.MeshLambertMaterial({ color: 0x333333 });
-    for (const sx of [-1.1, 1.1]) {
-      const skid = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.18, 3.4), skidMat);
-      skid.position.set(sx, -1.05, 0.4);
-      g.add(skid);
+    // Particles.
+    for (const pt of world.particles) {
+      const id = `pt-${pt.id}`;
+      seen.add(id);
+      const m = getMesh(id, () => {
+        const g = new THREE.Group();
+        const s = new THREE.Mesh(new THREE.SphereGeometry(0.3, 6, 6), new THREE.MeshBasicMaterial({ color: pt.color, transparent: true, opacity: 0.9 }));
+        g.add(s);
+        return g;
+      });
+      m.position.set(pt.x, pt.y, pt.z);
+      m.scale.setScalar(Math.max(0.1, pt.life));
     }
-    // Spotlight: a real SpotLight plus a visible cone so the beam reads.
-    const spot = new THREE.SpotLight(0xfff2b0, 0, 120, 0.32, 0.45, 1.2);
-    const spotTarget = new THREE.Object3D();
-    this.scene.add(spotTarget);
-    spot.target = spotTarget;
-    g.add(spot);
-    spot.position.set(0, -0.8, 0);
-    const cone = new THREE.Mesh(
-      new THREE.ConeGeometry(9, 55, 16, 1, true),
-      new THREE.MeshBasicMaterial({ color: 0xfff2b0, transparent: true, opacity: 0.13, side: THREE.DoubleSide, depthWrite: false }),
-    );
-    cone.rotation.x = Math.PI; // apex up, base down
-    cone.position.y = -27.5;
-    cone.visible = false;
-    g.add(cone);
-    g.userData.rotor = rotor;
-    g.userData.spot = spot;
-    g.userData.spotTarget = spotTarget;
-    g.userData.cone = cone;
-    this.scene.add(g);
-    return g;
-  }
-  // --- time of day -------------------------------------------------------
-  setTimeOfDay(hour) {
-    // hour 0..24; sun peaks at noon, sets ~18:30, rises ~5:30.
-    const sunAngle = ((hour - 6) / 12) * Math.PI;
-    const elev = Math.sin(sunAngle);
-    const dayF = Math.max(0, Math.min(1, elev * 2.2));
-    const goldF = Math.max(0, 1 - Math.abs(elev) * 3.2) * (elev > -0.08 ? 1 : 0);
-    this.nightFactor = 1 - dayF;
-    const sky = new THREE.Color().copy(NIGHT_SKY).lerp(DAY_SKY, dayF).lerp(GOLD_SKY, goldF * 0.55);
-    this.scene.background = sky;
-    this.scene.fog.color.copy(sky);
-    const sunColor = new THREE.Color().copy(DAY_SUN).lerp(GOLD_SUN, goldF);
-    this.sun.color.copy(sunColor);
-    this.sun.intensity = 0.15 + dayF * 2.1;
-    this.sun.position.set(Math.cos(sunAngle) * 180, Math.max(12, elev * 190), 70);
-    this.moon.intensity = this.nightFactor * 0.55;
-    this.hemi.intensity = 0.25 + dayF * 0.65;
-    for (const m of this.buildingMats) m.emissiveIntensity = this.nightFactor * 0.55;
-    return this.nightFactor;
-  }
-  // --- camera ------------------------------------------------------------
-  follow(px, pz, heading, dt, inCar, speed01) {
-    const fx = Math.sin(heading);
-    const fz = Math.cos(heading);
-    const dist = inCar ? 13 : 10;
-    const height = inCar ? 5.2 : 4.4;
-    const tx = px - fx * dist;
-    const tz = pz - fz * dist;
-    const k = 1 - Math.exp(-dt * 5);
-    this.camPos.x += (tx - this.camPos.x) * k;
-    this.camPos.z += (tz - this.camPos.z) * k;
-    this.camPos.y += (height - this.camPos.y) * k;
-    const lx = px + fx * 8;
-    const lz = pz + fz * 8;
-    this.camLook.x += (lx - this.camLook.x) * k;
-    this.camLook.z += (lz - this.camLook.z) * k;
-    this.camLook.y += (1.6 - this.camLook.y) * k;
-    let sx = 0;
-    let sy = 0;
-    if (this.shake > 0.01) {
-      sx = (Math.random() - 0.5) * this.shake;
-      sy = (Math.random() - 0.5) * this.shake;
-      this.shake *= Math.exp(-dt * 6);
+    // Drop meshes for entities that no longer exist.
+    for (const [id, m] of [...meshes]) {
+      if (!seen.has(id) && !id.startsWith('player')) {
+        scene.remove(m);
+        meshes.delete(id);
+      }
     }
-    this.camera.position.set(this.camPos.x + sx, this.camPos.y + sy, this.camPos.z);
-    this.camera.lookAt(this.camLook.x, this.camLook.y, this.camLook.z);
+    // Camera: cinematic shot camera wins, else chase cam.
+    let tx, tz, theading;
+    if (world.shotCam) {
+      camera.position.set(world.shotCam.x, world.shotCam.y, world.shotCam.z);
+      camera.lookAt(world.shotCam.lx, world.shotCam.ly, world.shotCam.lz);
+    } else {
+      const focus = p.inCar ? world.cars.find((c) => c.id === p.inCar) : p;
+      tx = focus ? focus.x : p.x;
+      tz = focus ? focus.z : p.z;
+      theading = focus ? focus.heading : p.heading;
+      const dist = p.inCar ? 26 : 16;
+      const height = p.inCar ? 13 : 10;
+      const bx = tx - Math.sin(theading) * dist;
+      const bz = tz - Math.cos(theading) * dist;
+      camPos.x += (bx - camPos.x) * Math.min(1, dt * 4);
+      camPos.z += (bz - camPos.z) * Math.min(1, dt * 4);
+      camPos.y += (height - camPos.y) * Math.min(1, dt * 4);
+      camLook.x += (tx - camLook.x) * Math.min(1, dt * 6);
+      camLook.z += (tz - camLook.z) * Math.min(1, dt * 6);
+      camLook.y = 1.5;
+      camera.position.copy(camPos);
+      camera.lookAt(camLook);
+    }
+    renderer.render(scene, camera);
   }
-  setCamera(px, py, pz, lx, ly, lz) {
-    this.camera.position.set(px, py, pz);
-    this.camera.lookAt(lx, ly, lz);
-    this.camPos.set(px, py, pz);
-    this.camLook.set(lx, ly, lz);
+
+  function resize(w, h) {
+    renderer.setSize(w, h, false);
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
   }
-  render() {
-    this.renderer.render(this.scene, this.camera);
-  }
+
+  return { renderer, scene, camera, buildCity, sync, resize, districtAt };
 }

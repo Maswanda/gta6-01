@@ -1,82 +1,60 @@
-// tuning.js — Solmar Bay: every number the game runs on, in one place.
-// Change a value here and the whole city follows. Nothing else in the
-// game hard-codes a balance number; every module reads TUNE.
-export const TUNE = {
-  city: {
-    size: 640, // playable square, metres, centred on 0,0
-    block: 64, // road grid spacing
-    roadWidth: 14,
-    districts: [
-      { name: 'Marina', cx: -160, cz: 160, color: 0x2e7f8f },
-      { name: 'Downtown', cx: 160, cz: -160, color: 0x8f7a2e },
-      { name: 'Vice Beach', cx: -160, cz: -160, color: 0x2e8f5a },
-      { name: 'The Hills', cx: 160, cz: 160, color: 0x7a4a8f },
-    ],
-  },
-  player: {
-    walkSpeed: 9,
-    runSpeed: 15,
-    health: 100,
-    armor: 100,
-    punchDamage: 12,
-    enterCarRadius: 4.5,
-  },
-  cars: {
-    sedan: { label: 'Solmar Sedan', top: 34, accel: 16, grip: 0.9, price: 1200, color: 0x3a6fd8 },
-    muscle: { label: 'Bay Muscle', top: 42, accel: 20, grip: 0.75, price: 3500, color: 0xd83a3a },
-    taxi: { label: 'Bay Cab', top: 30, accel: 13, grip: 0.95, price: 900, color: 0xe8c832 },
-    truck: { label: 'Harbor Truck', top: 26, accel: 10, grip: 0.8, price: 2200, color: 0x5a6b7a },
-  },
-  weapons: {
-    pistol: { label: 'Pistol', damage: 25, rate: 0.28, range: 60, price: 400, auto: false },
-    shotgun: { label: 'Shotgun', damage: 18, rate: 0.85, range: 26, price: 1200, auto: false, pellets: 6 },
-    smg: { label: 'SMG', damage: 14, rate: 0.09, range: 45, price: 2500, auto: true },
-  },
-  police: {
-    // Wanted stars 0..5. Each star is a heat level; the law answers in kind.
-    stars: [0, 1, 2, 3, 4, 5],
-    decayPerSec: 0.05, // stars fall slowly while hidden and unlit
-    decayHiddenBonus: 0.12, // extra decay while no officer sees the player
-    arrestHoldSeconds: 3, // an officer must hold the player this long to bust them (the bust fix: this value exists and is read by name)
-    bustRadius: 2.2,
-    maxCars: [0, 2, 3, 4, 5, 6],
-    roadblockAtStars: 4,
-    copHealth: 60,
-    copDamage: 8,
-  },
-  helicopter: {
-    spawnAtStars: 4,
-    cruiseHeight: 55,
-    followSpeed: 26,
-    retreatDamage: 100, // damage that makes the air unit pull off
-    spotlightRange: 70,
-    rotorDamage: 30,
-  },
-  radio: {
-    stations: [
-      { name: 'SOLMAR 88.5', mood: 'chill', bpm: 92, wave: 'sine' },
-      { name: 'BAY 101', mood: 'drive', bpm: 128, wave: 'square' },
-      { name: 'MARINA 94.3', mood: 'night', bpm: 104, wave: 'sawtooth' },
-    ],
-  },
-  crime: {
-    atmReward: 250,
-    atmWanted: 2,
-    eventReward: [150, 400],
-    eventCooldownSec: 45,
-  },
-  garage: {
-    dailyDealDiscount: 0.2,
-    sellBack: 0.6,
-  },
-  missions: {
-    reward: [300, 400, 500, 600, 700, 800, 900, 1000, 1200, 1500, 2000, 2500],
-  },
-  day: {
-    dayLengthSec: 240, // one full day/night cycle
-    startHour: 17.5, // golden hour at boot
-  },
-  save: {
-    key: 'solmar-bay-save-v4',
+// Solmar Bay: Heatwave — every tuning number in one place.
+// The city is a flat 800x800 plane (x,z in [-400,400]); the simulation is 2D logic
+// (x/z plane) with a 3D renderer on top, so the autopilot and the player share one truth.
+export const STEP = 1 / 60;
+export const DAY_LENGTH = 240; // seconds per full day/night cycle
+export const WORLD_HALF = 400;
+
+export const PLAYER = {
+  hp: 100, armor: 100,
+  walkSpeed: 6, runSpeed: 11,
+  enterCarRadius: 5,
+  bustSeconds: 3.5, // police within 6 units for this long = busted
+  wastedCashLoss: 200,
+};
+
+export const CAR = {
+  accel: 26, brake: 46, reverseMax: 12,
+  steer: 2.4, grip: 8.5, driftGrip: 3.2,
+  kinds: {
+    sedan: { maxSpeed: 33, hp: 100, price: 0, color: 0x3a7bd5, label: 'Vapid Sedan' },
+    sport: { maxSpeed: 43, hp: 80, price: 2500, color: 0xd53a3a, label: 'Comet Sport' },
+    taxi: { maxSpeed: 30, hp: 110, price: 1200, color: 0xe8c832, label: 'Downtown Taxi' },
+    truck: { maxSpeed: 26, hp: 160, price: 1800, color: 0x5a7a4a, label: 'Benson Truck' },
   },
 };
+
+export const POLICE = {
+  maxSpeed: 37, ramDamage: 6, chaseRadius: 220,
+  spawnDistance: 90, maxCars: 4,
+  heatPerKill: 1, heatPerRob: 1, heatDecay: 0.02,
+  roadblockAt: 4, heliAt: 4,
+};
+
+export const WEAPONS = {
+  pistol: { damage: 25, rate: 0.28, range: 70, spread: 0.03, auto: false, label: 'Pistol' },
+  shotgun: { damage: 14, pellets: 6, rate: 0.85, range: 34, spread: 0.12, auto: false, label: 'Shotgun' },
+  smg: { damage: 13, rate: 0.09, range: 52, spread: 0.06, auto: true, label: 'SMG' },
+};
+
+export const ENEMY = {
+  gang: { hp: 50, speed: 5, damage: 8, range: 40, rate: 1.1, label: 'Bay King' },
+  king: { hp: 130, speed: 4.2, damage: 14, range: 46, rate: 0.9, label: 'Bay King Enforcer' },
+};
+
+export const ATM = {
+  robAmountMin: 220, robAmountMax: 480,
+  tryRange: 3, cooldownSeconds: 60,
+};
+
+export const CRIME = {
+  eventEveryMin: 25, eventEveryMax: 45,
+  muggingReward: 150, carjackReward: 300,
+};
+
+export const GARAGE = { clearStarCost: 150 };
+
+// Mission rewards in story order (12 missions, $).
+export const MISSION_REWARD = [500, 750, 900, 1000, 1500, 1200, 1800, 2000, 2500, 3000, 4000, 6000];
+
+export const SAVE_KEY = 'solmar-bay-heatwave-save-v4';

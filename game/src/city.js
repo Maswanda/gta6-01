@@ -1,123 +1,125 @@
-// city.js — Solmar Bay: the procedural city layout, data only (no meshes).
-// A seeded Dice lays out the road grid, the buildings, the four landmarks,
-// the ATMs, the garage and the safehouse. scene.js turns this into meshes;
-// traffic, police and missions read the same layout, so everyone agrees
-// on where the roads and the places are.
-import { Dice } from './rng.js';
-import { TUNE } from './tuning.js';
+// Solmar Bay city model: 4 districts on an 800x800 plane, a 100-unit road grid,
+// deterministic buildings (seeded), landmarks, ATMs. Pure data + geometry helpers.
+// No rendering here — scene.js draws this.
+import { WORLD_HALF } from './tuning.js';
+import { createRng } from './rng.js';
 
-export function buildCityLayout(seed = 11) {
-  const dice = new Dice(seed);
-  const size = TUNE.city.size;
-  const half = size / 2;
-  const block = TUNE.city.block;
-  const roadAt = [];
-  for (let c = -half; c <= half; c += block) roadAt.push(c);
-  const roads = [];
-  for (const c of roadAt) {
-    roads.push({ axis: 'z', at: c, from: -half, to: half }); // runs north-south (constant x)
-    roads.push({ axis: 'x', at: c, from: -half, to: half }); // runs east-west (constant z)
-  }
-  // Landmarks, one per district, fixed so missions can name them.
-  const landmarks = [
-    { kind: 'lighthouse', name: 'Mercy Point Lighthouse', x: -224, z: 224, district: 'Marina' },
-    { kind: 'tower', name: 'Solmar Tower', x: 224, z: -224, district: 'Downtown' },
-    { kind: 'pier', name: 'Vice Pier', x: -224, z: -224, district: 'Vice Beach' },
-    { kind: 'observatory', name: 'Hills Observatory', x: 224, z: 224, district: 'The Hills' },
-  ];
-  const landmarkBlocks = new Set(landmarks.map((l) => `${Math.round(l.x / block)},${Math.round(l.z / block)}`));
-  // Buildings: one per block, inset from the roads; Downtown builds tall.
+export const DISTRICTS = [
+  { name: 'Marina', x0: -400, z0: -400, x1: 0, z1: 0, color: '#2e6f8e', ground: '#3d5a4a' },
+  { name: 'Vice Beach', x0: 0, z0: -400, x1: 400, z1: 0, color: '#c98a4a', ground: '#c2a878' },
+  { name: 'Downtown', x0: -400, z0: 0, x1: 0, z1: 400, color: '#4a5a7a', ground: '#555560' },
+  { name: 'Little Havana', x0: 0, z0: 0, x1: 400, z1: 400, color: '#8e6a3a', ground: '#6a5a4a' },
+];
+
+export const LANDMARKS = {
+  garage: { name: "Rico's Garage", x: -150, z: -150, label: 'GARAGE' },
+  safehouse: { name: 'Mara Safehouse', x: 150, z: 150, label: 'SAFEHOUSE' },
+  hospital: { name: 'Solmar General', x: -250, z: 250, label: 'HOSPITAL' },
+  policeHq: { name: 'Solmar PD HQ', x: 250, z: -250, label: 'POLICE HQ' },
+  marina: { name: 'Marina Pier', x: -320, z: -320, label: 'MARINA' },
+  beach: { name: 'Vice Beach', x: 320, z: -320, label: 'BEACH' },
+  plaza: { name: 'Calle Ocho Plaza', x: 250, z: 250, label: 'PLAZA' },
+  tower: { name: 'Solmar Tower', x: -50, z: 50, label: 'TOWER' },
+};
+
+const ATM_SPOTS = [
+  [-350, -250], [-50, -350], [150, -150], [350, -50],
+  [-250, 50], [-50, 150], [150, 350], [350, 250],
+];
+
+export function createCity(seed) {
+  const rng = createRng(seed);
   const buildings = [];
-  const parks = [];
-  for (let ix = 0; ix < roadAt.length - 1; ix++) {
-    for (let iz = 0; iz < roadAt.length - 1; iz++) {
-      const x0 = roadAt[ix];
-      const z0 = roadAt[iz];
-      const cx = x0 + block / 2;
-      const cz = z0 + block / 2;
-      const key = `${Math.round(cx / block)},${Math.round(cz / block)}`;
-      if (landmarkBlocks.has(key)) continue;
-      if (dice.chance(0.12)) {
-        parks.push({ x: cx, z: cz, w: block - 18, d: block - 18 });
-        continue;
+  // One block = 100x100 between roads (roads at multiples of 100, width 14).
+  // A building sits inside its block with a margin, so roads stay clear.
+  for (let bx = -4; bx < 4; bx += 1) {
+    for (let bz = -4; bz < 4; bz += 1) {
+      const cx = bx * 100 + 50;
+      const cz = bz * 100 + 50;
+      // Landmark blocks stay open (plaza / pier / beach / garage yard).
+      if (isNearLandmark(cx, cz)) continue;
+      if (rng.chance(0.14)) continue; // empty lot / park
+      const n = rng.int(1, 2);
+      for (let i = 0; i < n; i += 1) {
+        const w = rng.range(18, 34);
+        const d = rng.range(18, 34);
+        const ox = n === 1 ? 0 : (i === 0 ? -20 : 20);
+        const oz = n === 1 ? 0 : (i === 0 ? -18 : 18);
+        const h = rng.chance(0.12) ? rng.range(45, 70) : rng.range(10, 32);
+        buildings.push({
+          x: cx + ox, z: cz + oz, w, d, h,
+          color: pickBuildingColor(rng),
+        });
       }
-      const district = districtAt({ districts: TUNE.city.districts }, cx, cz);
-      const tall = district.name === 'Downtown';
-      const h = tall ? dice.range(35, 85) : dice.range(9, 30);
-      const w = dice.range(20, 38);
-      const d = dice.range(20, 38);
-      const palette = tall
-        ? [0x6b7a8f, 0x8f8578, 0x5a6b7a, 0x7a6b5a]
-        : [0x9a8f7a, 0x7a8f9a, 0x8f7a6b, 0x6b7a5a, 0xa89a80];
-      buildings.push({ x: cx, z: cz, w, d, h, color: dice.pick(palette), district: district.name });
     }
   }
-  // ATMs on street corners, for the robbery loop.
-  const atms = [
-    { x: -64, z: -64 }, { x: 64, z: 64 }, { x: -192, z: 64 },
-    { x: 192, z: -64 }, { x: 0, z: 192 }, { x: 192, z: 128 },
-  ];
-  const places = {
-    marina: { x: -224, z: 224, name: 'Marina' },
-    downtown: { x: 224, z: -224, name: 'Downtown' },
-    beach: { x: -224, z: -224, name: 'Vice Beach' },
-    hills: { x: 224, z: 224, name: 'The Hills' },
-    garage: { x: -96, z: 192, name: "Rico's Garage" },
-    safehouse: { x: 192, z: 224, name: 'Safehouse' },
-    pier: { x: -224, z: -224, name: 'Vice Pier' },
-    tower: { x: 224, z: -224, name: 'Solmar Tower' },
-    lighthouse: { x: -224, z: 224, name: 'Mercy Point Lighthouse' },
-    observatory: { x: 224, z: 224, name: 'Hills Observatory' },
+  const atms = ATM_SPOTS.map(([x, z], i) => ({ id: i, x, z, cooldownUntil: 0 }));
+  return { seed, buildings, atms, landmarks: LANDMARKS, districts: DISTRICTS };
+}
+
+function isNearLandmark(x, z) {
+  for (const key of Object.keys(LANDMARKS)) {
+    const lm = LANDMARKS[key];
+    if (Math.abs(x - lm.x) < 55 && Math.abs(z - lm.z) < 55) return true;
+  }
+  return false;
+}
+
+function pickBuildingColor(rng) {
+  const palette = [0x8a7a6a, 0x6a7a8a, 0x9a8a7a, 0x7a6a8a, 0xa89080, 0x5a6a7a, 0x8a9a7a, 0xb0a090];
+  return palette[Math.floor(rng.next() * palette.length)];
+}
+
+export function districtAt(x, z) {
+  for (const d of DISTRICTS) {
+    if (x >= d.x0 && x < d.x1 && z >= d.z0 && z < d.z1) return d.name;
+  }
+  return 'Solmar Bay';
+}
+
+export function isOnRoad(x, z) {
+  const rx = Math.abs(((x + 400) % 100) - 50);
+  const rz = Math.abs(((z + 400) % 100) - 50);
+  return rx > 43 || rz > 43;
+}
+
+// Push a circle (x,z,r) out of every building AABB. Returns corrected {x,z} + hit flag.
+export function collideCircle(city, x, z, r) {
+  let hit = false;
+  for (const b of city.buildings) {
+    const bx0 = b.x - b.w / 2 - r, bx1 = b.x + b.w / 2 + r;
+    const bz0 = b.z - b.d / 2 - r, bz1 = b.z + b.d / 2 + r;
+    if (x > bx0 && x < bx1 && z > bz0 && z < bz1) {
+      hit = true;
+      const dxl = x - bx0, dxr = bx1 - x, dzl = z - bz0, dzr = bz1 - z;
+      const m = Math.min(dxl, dxr, dzl, dzr);
+      if (m === dxl) x = bx0; else if (m === dxr) x = bx1;
+      else if (m === dzl) z = bz0; else z = bz1;
+    }
+  }
+  x = Math.max(-WORLD_HALF + 6, Math.min(WORLD_HALF - 6, x));
+  z = Math.max(-WORLD_HALF + 6, Math.min(WORLD_HALF - 6, z));
+  return { x, z, hit };
+}
+
+// Snap a point to the nearest road centreline (used by autopilot recovery teleports).
+export function nearestRoadPoint(x, z) {
+  const snap = (v) => {
+    const rel = v + 400;
+    const block = Math.floor(rel / 100);
+    const inBlock = rel - block * 100;
+    if (inBlock < 7) return block * 100 - 400;
+    if (inBlock > 93) return (block + 1) * 100 - 400;
+    return v;
   };
-  return { size, half, block, roadAt, roads, buildings, parks, landmarks, atms, places, seed, districts: TUNE.city.districts };
+  const sx = snap(x), sz = snap(z);
+  const dx = Math.abs(sx - x), dz = Math.abs(sz - z);
+  if (dx < dz) return { x: sx, z };
+  return { x, z: sz };
 }
 
-export function districtAt(layout, x, z) {
-  let best = layout.districts[0];
-  let bestD = Infinity;
-  for (const d of layout.districts) {
-    const dx = x - d.cx;
-    const dz = z - d.cz;
-    const dd = dx * dx + dz * dz;
-    if (dd < bestD) {
-      bestD = dd;
-      best = d;
-    }
-  }
-  return best;
-}
-
-export function districtNameAt(layout, x, z) {
-  return districtAt(layout, x, z).name;
-}
-
-// The closest point on any road to (x, z), snapped to the road centre.
-export function nearestRoadPoint(layout, x, z) {
-  let best = null;
-  let bestD = Infinity;
-  for (const c of layout.roadAt) {
-    const d1 = Math.abs(x - c);
-    if (d1 < bestD) {
-      bestD = d1;
-      best = { x: c, z };
-    }
-    const d2 = Math.abs(z - c);
-    if (d2 < bestD) {
-      bestD = d2;
-      best = { x, z: c };
-    }
-  }
-  return best;
-}
-
-export function randomRoadPoint(layout, dice) {
-  const c = dice.pick(layout.roadAt);
-  const along = dice.range(-layout.half + 20, layout.half - 20);
-  if (dice.chance(0.5)) return { x: c, z: along };
-  return { x: along, z: c };
-}
-
-export function clampToCity(layout, x, z) {
-  const h = layout.half - 8;
-  return { x: Math.max(-h, Math.min(h, x)), z: Math.max(-h, Math.min(h, z)) };
+export function randomRoadPoint(rng) {
+  const gx = rng.int(-4, 3) * 100 + rng.pick([-50, 50]);
+  const gz = rng.int(-4, 3) * 100 + rng.pick([-50, 50]);
+  return { x: gx + rng.range(-30, 30), z: gz + rng.range(-30, 30) };
 }

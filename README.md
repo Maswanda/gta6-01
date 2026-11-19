@@ -1,119 +1,60 @@
-# Solmar Bay: Heatwave — a GTA 6 fan game (v4)
+# Solmar Bay: Heatwave — Make GTA 6 (gta6-01)
 
-An open-world crime game set in **Solmar Bay**, a 640×640 coastal city with
-four districts — Marina, Downtown, Vice Beach, The Hills — built with
-three.js (vendored, no CDN, no external assets) and the Web Audio API.
-Everything runs offline from `game/`.
+An open-world crime game in one self-contained web app: drive, fight, rob, and survive
+12 story missions across 4 districts of Solmar Bay. No CDN, no network requests —
+three.js is vendored under `game/vendor/three/`, all audio is procedural Web Audio.
 
-## Play
+Play it: `node serve.ts`, then open http://localhost:8080.
 
-```
-node serve.ts            # http://localhost:8080
-```
+## The game
 
-## The story — 12 missions
+- **12 story missions** (`game/src/missions.js`, chained by explicit `nextIndex`;
+  mission 12 `nextIndex: null` ends the story): Meet Mara, Hot Wheels, First Blood,
+  Cash Run, The Getaway, Rico's Ride, Bay Kings Turf, Midnight Delivery, Heat Wave,
+  The Marina Heist, **Air Support** (mission 11), **The Last Run** (mission 12).
+- **Helicopter AI** (`game/src/helicopter.js`): spawns at 4–5 wanted stars, orbits with
+  a searchlight cone; escape at the safehouse or by breaking line of sight.
+- **Radio** (`game/src/radio.js`): 3 procedural stations (SOLMAR FM, VICE 88, BAY TALK),
+  switchable with R, station name in the HUD every frame.
+- **Garage + safehouse** (`game/src/garage.js`): buy/sell 4 vehicle types with cash,
+  owned vehicles persist in the save; the safehouse heals and clears a wanted star.
+- **Dynamic Crime System + ATM rob** (`game/src/crime.js`): street crimes to answer,
+  ATM robbery (range 3, 60 s cooldown per ATM, robAtm skips ATMs on cooldown).
+- **Police Chase 2.0** (`game/src/police.js`): wanted 0–5, pursuit cars that ram,
+  roadblocks at 4+ stars, bust/wasted respawn (missions never fail).
+- **City** (`game/src/city.js`): 4 districts (Marina, Vice Beach, Downtown,
+  Little Havana), road grid, seeded buildings, landmarks, 8 ATMs, day/night cycle
+  (240 s/day, `game/src/scene.js`).
+- **Combat** (`game/src/combat.js`): pistol / shotgun / SMG, 2 enemy types
+  (Bay King, Bay King Enforcer). Enemy bullets damage the *car* when the player
+  is inside one — never the player.
+- **Traffic + peds** (`game/src/traffic.js`): 12 ambient cars, 28 wandering peds.
+- **Save** (`game/src/persist.js`): localStorage — cash, mission, weapons, owned
+  vehicles, side results.
+- **Side activities** (`game/src/side.js`): taxi fares (T), vigilante (V), time trial (Y).
+- **Diegetic HUD** (`game/src/hud.js`): minimap with objective/police/heli markers,
+  wanted stars, cash, HP/armor, district, radio station, objective, keybinds.
 
-1. **Welcome to Solmar** — reach the pier.
-2. **First Wheels** — steal a sedan.
-3. **The Drop** — pick up the package.
-4. **Bay Kings** — clear the gang block.
-5. **Getaway Driver** — deliver the goods in a car.
-6. **Night Shift** — rob an ATM after dark.
-7. **The Informant** — reach the informant.
-8. **Hot Wheels** — steal a muscle car.
-9. **The Vault** — hold the plaza for 60 seconds.
-10. **Heatwave** — deliver under 4-star heat.
-11. **Air Support** — shoot down the police helicopter.
-12. **The Last Run** — the final delivery. $2,500.
+## Screenshots (each proves a different system)
 
-Missions chain automatically. Getting busted or wasted restarts the
-current mission from the safehouse (cash −10%).
-
-## Systems
-
-- **Wanted system** — 0–5 stars. Police cars, roadblocks (≥4 stars), foot
-  cops (≥3 stars), and a helicopter with a spotlight (≥4 stars, retreats
-  after 100 damage). A bust takes 3 seconds of continuous contact with an
-  officer — break away and the timer resets.
-- **Police Chase 2.0** — cop cars ram and PIT; spikes are avoided by
-  drifting (Space = handbrake, grip ×0.35).
-- **Helicopter AI** — cruises at 55 m, follows with a spotlight that
-  freezes wanted decay, retreats at 100 damage (20 s cooldown).
-- **Procedural radio** — 3 WebAudio stations (SOLMAR 88.5 chill 92 BPM,
-  BAY 101 drive 128 BPM, MARINA 94.3 night 104 BPM). V switches station,
-  M mutes.
-- **Rico's Garage** — buy, sell and select cars (sedan / muscle / sport /
-  van), a daily deal, and a safehouse that heals and clears wanted.
-- **Dynamic Crime System** — random muggings, carjackings and shootouts;
-  clear them for $150–$400. ATM robbery: 3 s channel, $250, +2 wanted,
-  60 s cooldown per ATM.
-- **Day/night cycle** — a 4-minute day; sun, sky, lamps and building
-  windows follow the clock. Landmarks: Mercy Point Lighthouse, Solmar
-  Tower, Vice Pier, Hills Observatory.
-- **Traffic & pedestrians** — 14 traffic cars on the road grid, 28
-  pedestrians on the sidewalks; clipping one at speed adds wanted.
-- **Weapons** — pistol, SMG, shotgun; two enemy types (gang, guard);
-  health/armor pickups and cash drops.
-- **Save** — progress, cash, cars and weapons persist in localStorage
-  (`solmar-bay-save-v4`).
+| Shot | What it proves | Code behind it |
+| --- | --- | --- |
+| 1-showcase.jpg | World showcase: Marina daytime, mission 1, full HUD | `scene.js` buildCity, `hud.js` |
+| 2-heli.jpg | 5-star helicopter pursuit at night, Vice Beach | `helicopter.js` spawnChopperUnit |
+| 3-combat.jpg | Mission + combat: "Clear the Bay Kings (0/3)", shotgun | `combat.js` fireWeapon, `missions.js` |
+| 4-garage.jpg | Garage / progression: Rico's Garage, 3 rides to pick | `garage.js` pickRide / buyVehicle |
 
 ## Controls
 
-| Key | Action |
-| --- | --- |
-| WASD | move / drive |
-| Shift | run |
-| Space | handbrake (drift) / jump |
-| E | enter car · exit car · rob ATM |
-| F / click | shoot |
-| V | next radio station |
-| M | mute radio |
-| G | garage (near it) · H safehouse (near it) |
-| P / Esc | pause |
-| Enter | start |
+WASD drive/walk · Space drift · F enter/exit car · E rob ATM · R radio ·
+1/2/3 weapons · T taxi · V vigilante · Y time trial · P pause · J fire (mouse also works)
 
-## Files
+## Architecture
 
-```
-game/
-  index.html            the page (importmap -> vendored three.js)
-  index.css             HUD styling
-  src/
-    rng.js              seeded dice (mulberry32)
-    tuning.js           every number the game runs on
-    input.js            keyboard + mouse + touch
-    audio.js            procedural WebAudio SFX
-    radio.js            3 procedural music stations
-    city.js             the 640x640 layout: roads, districts, ATMs
-    scene.js            three.js world, lighting, day/night, camera
-    hud.js              diegetic HUD: minimap, stars, cash, objective
-    effects.js          muzzle flash, smoke, sparks, cash burst
-    drive.js            arcade car physics, collisions, enter/exit
-    traffic.js          14 traffic cars + 28 pedestrians
-    onfoot.js           the player on foot
-    combat.js           hitscan shooting, enemies, pickups
-    police.js           wanted, cops, roadblocks, sirens
-    helicopter.js       the police helicopter + spotlight
-    garage.js           Rico's garage + safehouse
-    crime.js            dynamic crime events + ATM robbery
-    missions.js         the 12-mission story arc
-    side.js             street races + courier jobs
-    persist.js          localStorage save/load
-    shots.js            the 4 staged screenshots (?shot=)
-    main.js             bootstrap, game loop, autopilot
-  vendor/three/         three.js r160 (vendored)
-main.ts                 builds /output + dossier.json
-serve.ts                local static server
-shots.json              the 4 screenshot queries
-screenshots/            1-showcase, 2-heli, 3-combat, 4-garage
-```
-
-## Playtest
-
-Load with `?autopilot=1&timescale=4` — an autopilot drives the whole
-story (all 12 missions) and reports progress in `window.__PLAYTEST__`.
-Screenshots: `?shot=showcase|heli|combat|garage&seed=11`.
-
-## License
-
-MIT — see `LICENSE`. A fan-made game, not affiliated with Rockstar Games.
+2D simulation on the x/z plane (`tuning.js` constants, `city.js` geometry,
+`drive.js` arcade car physics, `onfoot.js`), drawn in 3D by `scene.js`
+(three.js, chase camera, day/night sun + sky). `main.js` boots the world, runs the
+fixed 1/60 s loop, and hosts the autopilot (`?autopilot=1&timescale=8`) used by the
+playtest harness — it drives to objectives, fights, robs, and recovers (teleports
+near the objective) when stuck, so all 12 missions complete with 0 console errors.
+`shots.js` stages the four `?shot=` scenes from real game state.

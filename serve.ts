@@ -1,11 +1,7 @@
-// A tiny static server for game/ (Node 22, standard library only), so the
-// entry can be played locally without a build step:
-//
-//   node serve.ts               -> http://localhost:8080
-//   node serve.ts --port 9000   -> http://localhost:9000
-//
-// It sends the MIME types a browser game needs and refuses any path
-// outside game/. A development convenience, not a server for the internet.
+// A tiny static server for game/ (Node 22, standard library only), so an entry can be played
+// locally without a build step: `node serve.ts` serves game/ on http://localhost:8080.
+// It sends the MIME types a browser game needs, refuses any path outside game/, and otherwise
+// does nothing clever: this is a development convenience, not a web server for the internet.
 import { createReadStream, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { extname, join, normalize, resolve, sep } from 'node:path';
@@ -65,9 +61,12 @@ createServer((request, response) => {
     response.writeHead(404).end('not found');
     return;
   }
-  const type = MIME[extname(file).toLowerCase()] ?? 'application/octet-stream';
-  response.writeHead(200, { 'content-type': type, 'content-length': size });
+  response.writeHead(200, {
+    'content-type': MIME[extname(file).toLowerCase()] ?? 'application/octet-stream',
+    'content-length': size,
+    'cache-control': 'no-store',
+  });
   createReadStream(file).pipe(response);
-}).listen(port, () => {
-  console.log(`Solmar Bay serving at http://localhost:${port}`);
+}).listen(port, '127.0.0.1', () => {
+  console.log(`game/ is on http://localhost:${port}`);
 });

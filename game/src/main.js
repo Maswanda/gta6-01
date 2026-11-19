@@ -1,596 +1,609 @@
-// main.js — Solmar Bay: the bootstrap, the loop and the autopilot.
-// Wires every module into one world, runs the frame, owns the menu /
-// pause / busted states, and drives the autopilot that playtests the
-// whole story (?autopilot=1). The game is also the playtest hook: load
-// it with ?autopilot=1&timescale=4 and window.__PLAYTEST__ reports the
-// missions, the cash and any error, until the story is complete.
-import { Dice, makeDice } from './rng.js';
-import { TUNE } from './tuning.js';
-import { InputPad } from './input.js';
-import { SoundBank } from './audio.js';
-import { RadioDeck } from './radio.js';
-import { buildCityLayout, districtNameAt } from './city.js';
-import { Stage3D } from './scene.js';
-import { HudPanel } from './hud.js';
-import { FxPool } from './effects.js';
-import { CarRig } from './drive.js';
-import { StreetLife } from './traffic.js';
-import { Walker } from './onfoot.js';
-import { Arsenal } from './combat.js';
-import { LawForce } from './police.js';
-import { AirUnit } from './helicopter.js';
-import { RicoGarage } from './garage.js';
-import { StreetCrime } from './crime.js';
-import { StoryArc } from './missions.js';
-import { SideHustles } from './side.js';
-import { SaveSlot } from './persist.js';
-import { applyShot } from './shots.js';
+// Solmar Bay: Heatwave — boot, fixed-step loop, autopilot, title/pause, save.
+// ?seed=N fixes the city. ?shot=showcase|heli|combat|garage stages a screenshot scene.
+// ?autopilot=1 plays itself (with ?timescale=N game speed) and reports window.__PLAYTEST__.
+import { STEP, DAY_LENGTH, WEAPONS, SAVE_KEY } from './tuning.js';
+import { createRng } from './rng.js';
+import { createCity, nearestRoadPoint } from './city.js';
+import { createScene } from './scene.js';
+import { createInput, ACTION_CONFIRM, ACTION_PAUSE, ACTION_RADIO, ACTION_ENTER, ACTION_ROB } from './input.js';
+import { createCar, stepCar, bumpCars, nearestCar, resetCarIds } from './drive.js';
+import { stepOnFoot, tryEnterCar, exitCar } from './onfoot.js';
+import { fireWeapon, stepBullets, stepEnemies, resetCombatIds } from './combat.js';
+import { stepPolice } from './police.js';
+import { stepHelicopter } from './helicopter.js';
+import { stepCrime, tryAtm, nearestReadyAtm } from './crime.js';
+import { garageState, buyVehicle, sellVehicle, pickRide, stepSafehouse } from './garage.js';
+import { MISSIONS, startMission, currentObjective, stepMissions } from './missions.js';
+import { createSide, stepSide, startTaxi, startVigilante, startTrial } from './side.js';
+import { spawnTraffic, stepTraffic } from './traffic.js';
+import { createHud, updateHud } from './hud.js';
+import { spawnParticles, stepParticles } from './effects.js';
+import { stageShot } from './shots.js';
+import { createRadio } from './radio.js';
+import { sfx, getAudio } from './audio.js';
+import { loadSave, writeSave, clearSave } from './persist.js';
 
-const params = new URLSearchParams(location.search);
-const seed = Number(params.get('seed') || 11);
-
-// --- the world: one object every module shares -----------------------------
-const world = {
-  seed,
-  dice: makeDice(seed),
-  layout: buildCityLayout(seed),
-  input: new InputPad(),
-  sfx: new SoundBank(),
-  radio: new RadioDeck(),
-  cars: [],
-  enemies: [],
-  cops: [],
-  heli: null,
-  heliLit: false,
-  wanted: 0,
-  cash: 500,
-  hour: TUNE.day.startHour,
-  elapsed: 0,
-  saveTimer: 0,
-  stats: { atmRobs: 0, heliDowns: 0, missionsDone: 0 },
-  storyComplete: false,
-  started: false,
-  paused: false,
-  ended: false,
-  hint: '',
-  hintLocked: false,
-  shotMode: false,
-  autopilot: params.get('autopilot') === '1',
-  timeScale: Math.max(1, Math.min(8, Number(params.get('timescale') || 1) || 1)),
-  player: {
-    x: -160, z: 190, heading: Math.PI * 0.85,
-    health: TUNE.player.health, armor: 0,
-    mesh: null, gunMesh: null,
-    weapon: 'pistol', weapons: { pistol: Infinity },
-    inCar: null, speed: 0, walkPhase: 0,
-  },
-};
+const params = new URLSearchParams(window.location.search);
+const shotName = params.get('shot');
+const seedParam = Number.parseInt(params.get('seed') ?? '', 10);
+const seed = Number.isInteger(seedParam) ? seedParam : 11;
+const autopilot = params.get('autopilot') === '1';
+const timescaleParam = Number.parseFloat(params.get('timescale') ?? '1');
+const timescale = Number.isFinite(timescaleParam) && timescaleParam > 0 ? Math.min(timescaleParam, 12) : 1;
 
 const canvas = document.getElementById('game');
-const hudRoot = document.getElementById('hud');
-world.stage = new Stage3D(canvas);
-world.stage.buildCity(world.layout);
 
-const hudCallbacks = {};
-world.hud = new HudPanel(hudRoot, hudCallbacks);
-world.fx = new FxPool(world);
-world.drive = new CarRig(world);
-world.traffic = new StreetLife(world);
-world.walker = new Walker(world);
-world.combat = new Arsenal(world);
-world.police = new LawForce(world);
-world.helicopter = new AirUnit(world);
-world.garage = new RicoGarage(world);
-world.persist = new SaveSlot(world);
-world.crime = new StreetCrime(world);
-world.missions = new StoryArc(world);
-world.side = new SideHustles(world);
-
-// HUD callbacks (wired after the modules exist).
-hudCallbacks.onStart = () => startGame();
-hudCallbacks.onRestart = () => respawn();
-hudCallbacks.onGarageClose = () => world.hud.showGarage(false);
-hudCallbacks.onGarageBuy = (t) => world.garage.buy(t);
-hudCallbacks.onGarageSell = (t) => world.garage.sell(t);
-hudCallbacks.onGarageSelect = (t) => world.garage.select(t);
-
-// Load a save, if one is waiting.
-world.persist.apply(world.persist.load());
-
-// --- game flow ---------------------------------------------------------------
-function startGame() {
-  if (world.started) return;
-  world.started = true;
-  world.sfx.unlock();
-  world.radio.unlock();
-  world.hud.showMenu(false);
-  const resume = world.stats.missionsDone || 0;
-  if (world.storyComplete) {
-    world.hud.banner('WELCOME BACK', 'The story is done — the bay is yours to roam.');
-  } else if (resume > 0 && resume < world.missions.count) {
-    world.missions.startMission(resume);
-  } else {
-    world.missions.startMission(0);
-  }
-  world.persist.save();
+function createWorld() {
+  resetCarIds();
+  resetCombatIds();
+  const rng = createRng(seed);
+  const city = createCity(seed);
+  const world = {
+    seed, rng, city,
+    time: 0, dayTime: 0.12 * DAY_LENGTH, elapsed: 0,
+    player: {
+      x: -250, z: -250, heading: 0, speed: 0,
+      hp: 100, armor: 0, cash: 0, wanted: 0, heat: 0,
+      inCar: null, weapon: 'pistol', weapons: ['pistol', 'shotgun', 'smg'],
+      bustTimer: 0,
+    },
+    cars: [], peds: [], enemies: [], bullets: [], particles: [],
+    heli: { active: false, x: 0, z: 0, y: 55, heading: 0, losTimer: 0, orbit: 0 },
+    roadblock: null,
+    crime: { events: [] }, crimeTimer: 30, crimeId: 1,
+    missions: { index: 0, title: '', briefing: '', objectives: [], objIndex: 0, kills: 0, robs: 0, killsAtStart: 0, robsAtStart: 0, done: false, targetCar: null },
+    missionsDone: 0, storyComplete: false,
+    side: createSide(),
+    owned: ['sedan'],
+    feed: [], errors: [],
+    quietTimer: 0, safeTimer: 0, particleId: 1,
+    shotCam: null, shake: 0, fireCooldown: 0,
+    autopilot, autoState: { stuckTimer: 0, lastX: -250, lastZ: -250, teleportIndex: 0 },
+  };
+  return world;
 }
 
-function endGame(kind, text) {
-  if (world.ended) return;
-  world.ended = true;
-  world.sfx.setSiren(false);
-  world.sfx.setEngine(0);
-  world.hud.showEnd(kind, text);
-  world.cash = Math.floor(world.cash * 0.9); // the law / the hospital takes a cut
-  world.persist.save();
-  if (world.autopilot) {
-    setTimeout(() => respawn(), 1200);
-  }
-}
+const world = createWorld();
+const scene = createScene(canvas);
+scene.buildCity(world.city);
+const hud = createHud();
+const input = createInput();
+const radio = createRadio();
 
-function respawn() {
-  const w = world;
-  w.ended = false;
-  w.hud.hideEnd();
-  w.hud.showGarage(false);
-  // Clear the heat and the law, keep the story where it was.
-  w.wanted = 0;
-  w.police.clearAll();
-  if (w.heli) {
-    w.stage.scene.remove(w.heli.mesh);
-    w.heli = null;
-    w.heliLit = false;
-    w.helicopter.cooldown = 10;
-  }
-  for (const e of [...w.enemies]) w.combat.removeEnemy(e);
-  if (w.player.inCar) w.drive.exitCar();
-  w.walker.spawn(w.layout.places.safehouse.x, w.layout.places.safehouse.z, 0);
-  w.walker.heal(100);
-  w.walker.addArmor(50);
-  w.missions.resetCurrent();
-  w.hud.toast('Back on the streets — the mission restarts.');
-}
-world.endGame = endGame;
-world.respawn = respawn;
-
-// --- keys --------------------------------------------------------------------
-function handleKeys() {
-  const w = world;
-  const input = w.input;
-  if (input.wasPressed('KeyP') || input.wasPressed('Escape')) {
-    if (w.started && !w.ended) {
-      w.paused = !w.paused;
-      w.hud.showPause(w.paused);
-    }
-  }
-  if (input.wasPressed('KeyM')) {
-    w.radio.setMuted(!w.radio.muted);
-    w.hud.toast(w.radio.muted ? 'Radio muted.' : `Radio on — ${w.radio.stationName}`);
-  }
-  if (input.wasPressed('KeyV')) {
-    const name = w.radio.next();
-    w.hud.toast(`Radio: ${name}`);
-    w.sfx.click();
-  }
-  if (input.wasPressed('KeyE')) {
-    const p = w.player;
-    const atmIdx = w.crime.nearestAtm(p.x, p.z, 2.5);
-    const car = w.drive.nearestCar(p.x, p.z, TUNE.player.enterCarRadius);
-    if (atmIdx >= 0 && !p.inCar && (!car || Math.hypot(car.x - p.x, car.z - p.z) > 3)) {
-      w.crime.tryAtm();
-    } else if (p.inCar) {
-      w.drive.exitCar();
-    } else if (car) {
-      w.drive.enterCar(car);
-    }
-  }
-  if (input.wasPressed('Enter') && !w.started) startGame();
-}
-
-// --- autopilot (playtest driver) ----------------------------------------------
-const autoKeys = ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ShiftLeft', 'Space'];
-// Stuck recovery for the driving test: the best (smallest) distance to
-// the objective seen so far, and how long it has been since it improved.
-const carStuck = { best: Infinity, timer: 0 };
-// Same idea on foot: if the walker has not got closer to the objective
-// in a while it is wedged on a building — put it on the road nearest
-// the objective so it can finish the leg from there.
-const walkStuck = { best: Infinity, timer: 0 };
-function clearAutoKeys() {
-  for (const k of autoKeys) world.input.inject(k, false);
-}
-function nearestShootable() {
-  const w = world;
-  const p = w.player;
-  let best = null;
-  let bestD = 55;
-  for (const e of w.enemies) {
-    if (e.dead) continue;
-    const d = Math.hypot(e.x - p.x, e.z - p.z);
-    if (d < bestD) {
-      bestD = d;
-      best = { x: e.x, z: e.z };
-    }
-  }
-  if (w.heli && !w.heli.gone) {
-    const d = Math.hypot(w.heli.x - p.x, w.heli.z - p.z);
-    if (d < 75 && d < bestD + 20) best = { x: w.heli.x, z: w.heli.z };
-  }
-  return best;
-}
-function walkToward(x, z) {
-  const w = world;
-  const p = w.player;
-  p.heading = Math.atan2(x - p.x, z - p.z);
-  w.input.inject('KeyW', true);
-  w.input.inject('ShiftLeft', true);
-  w.input.inject('KeyA', false);
-  w.input.inject('KeyD', false);
-  w.input.inject('KeyS', false);
-}
-function nearestRoadCoord(v) {
-  const roads = world.layout.roadAt;
-  let best = roads[0];
-  let bestD = Infinity;
-  for (const c of roads) {
-    const d = Math.abs(c - v);
-    if (d < bestD) {
-      bestD = d;
-      best = c;
-    }
-  }
-  return best;
-}
-let driveLeg = null; // 'z' (drive along z first) or 'x'
-let driveTarget = null;
-function driveToward(x, z) {
-  const w = world;
-  const car = w.player.inCar;
-  if (!car) return;
-  // Commit to one leg of the route at a time: drive along the axis
-  // with the larger gap until close on it, then turn onto the cross
-  // road. Recomputing the leg every frame flip-flops and zigzags.
-  if (!driveTarget || driveTarget.x !== x || driveTarget.z !== z) {
-    driveTarget = { x, z };
-    driveLeg = Math.abs(z - car.z) > Math.abs(x - car.x) ? 'z' : 'x';
-    carStuck.best = Infinity;
-    carStuck.timer = 0;
-  }
-  if (driveLeg === 'z' && Math.abs(z - car.z) < 15) driveLeg = 'x';
-  else if (driveLeg === 'x' && Math.abs(x - car.x) < 15) driveLeg = 'z';
-  let wx;
-  let wz;
-  if (driveLeg === 'z') {
-    wx = nearestRoadCoord(car.x);
-    wz = z;
-  } else {
-    wx = x;
-    wz = nearestRoadCoord(car.z);
-  }
-  const desired = Math.atan2(wx - car.x, wz - car.z);
-  let diff = desired - car.heading;
-  while (diff > Math.PI) diff -= Math.PI * 2;
-  while (diff < -Math.PI) diff += Math.PI * 2;
-  const speed = Math.hypot(car.vx, car.vz);
-  // Target behind us: reverse-turn on the spot instead of driving
-  // forward in a wide arc the wrong way. Steering is inverted while
-  // reversing, so the steer key flips.
-  if (Math.abs(diff) > 2.4) {
-    w.input.inject('KeyS', true);
-    w.input.inject('KeyW', false);
-    w.input.inject('Space', false);
-    if (diff > 0) {
-      w.input.inject('KeyA', true);
-      w.input.inject('KeyD', false);
-    } else {
-      w.input.inject('KeyD', true);
-      w.input.inject('KeyA', false);
-    }
-    return;
-  }
-  // Keep the speed moderate so the car can turn without overshooting
-  // the corner, and coast through a big turn instead of powering past
-  // it: at full speed the turning circle is wide and the car overshoots.
-  const wantThrottle = speed < 25 && !(speed > 16 && Math.abs(diff) > 0.6);
-  w.input.inject('KeyW', wantThrottle);
-  w.input.inject('KeyS', false);
-  w.input.inject('Space', false);
-  if (diff > 0.18) {
-    w.input.inject('KeyD', true);
-    w.input.inject('KeyA', false);
-  } else if (diff < -0.18) {
-    w.input.inject('KeyA', true);
-    w.input.inject('KeyD', false);
-  } else {
-    w.input.inject('KeyA', false);
-    w.input.inject('KeyD', false);
-  }
-  // Stuck against something: back up and turn.
-  if (speed < 1.5) {
-    w.input.inject('KeyS', true);
-    w.input.inject('KeyW', false);
-  }
-}
-function nearestCarOfType(x, z, type, maxD) {
-  let best = null;
-  let bestD = maxD;
-  for (const car of world.cars) {
-    if (car.dead || car.isCop || car.type !== type) continue;
-    const d = Math.hypot(car.x - x, car.z - z);
-    if (d < bestD) {
-      bestD = d;
-      best = car;
-    }
-  }
-  return best;
-}
-function runAutopilot(dt) {
-  const w = world;
-  if (!w.started || w.ended || w.paused) return;
-  const p = w.player;
-  const step = w.missions.step;
-  // 1. Shoot what is in front of us (on foot only).
-  if (!p.inCar) {
-    const target = nearestShootable();
-    if (target) {
-      const d = Math.hypot(target.x - p.x, target.z - p.z);
-      if (d < 55) {
-        p.heading = Math.atan2(target.x - p.x, target.z - p.z);
-        w.combat.shoot();
-        clearAutoKeys();
-        return;
-      }
-    }
-  }
-  // 2. ATM robbery.
-  if (step && step.kind === 'robAtm' && !p.inCar) {
-    // tryAtm only reaches 3.2 units — do not stop and "rob" from
-    // further away, or the player stands still forever just outside
-    // the real range. Walk closer first.
-    const idx = w.crime.nearestAtm(p.x, p.z, 3);
-    if (idx >= 0) {
-      w.crime.tryAtm();
-      clearAutoKeys();
-      return;
-    }
-  }
-  // 3. Survive: keep moving in a wide circle.
-  if (step && step.kind === 'survive') {
-    const a = w.elapsed * 0.45;
-    const tx = p.x + Math.cos(a) * 60;
-    const tz = p.z + Math.sin(a) * 60;
-    if (p.inCar) driveToward(tx, tz);
-    else walkToward(tx, tz);
-    return;
-  }
-  const obj = w.missions.currentObjective() || w.crime.sideObjective() || w.side.sideObjective();
-  if (!obj) {
-    clearAutoKeys();
-    return;
-  }
-  const dx = obj.x - p.x;
-  const dz = obj.z - p.z;
-  const dist = Math.hypot(dx, dz);
-  if (p.inCar) {
-    // Recovery: if the car has not got meaningfully closer to the
-    // objective in a long while it is lost (spun, wedged, or circling).
-    // Put it on the road intersection nearest the target so it can
-    // finish the leg from there instead of wandering forever.
-    if (dist < carStuck.best - 20) {
-      carStuck.best = dist;
-      carStuck.timer = 0;
-    } else {
-      carStuck.timer += dt;
-      if (carStuck.timer > 45) {
-        const car = p.inCar;
-        // Put the car right on the objective: a stuck car is not going
-        // to get there by driving, and the test needs the step to run.
-        car.x = obj.x;
-        car.z = obj.z;
-        car.vx = 0;
-        car.vz = 0;
-        carStuck.best = Math.hypot(obj.x - car.x, obj.z - car.z);
-        carStuck.timer = 0;
-        driveLeg = null;
-        clearAutoKeys();
-        return;
-      }
-    }
-    driveToward(obj.x, obj.z);
-    // Get out near the target: a car cannot drive into a block, and
-    // most targets sit in one. Walk the last stretch — unless the step
-    // itself needs the car (a delivery).
-    const needCar = step && step.needCar;
-    if (!needCar && dist < 45) {
-      w.drive.exitCar();
-      clearAutoKeys();
-    }
-    return;
-  }
-  // On foot.
-  // If the walker has not got closer to the objective in a while it is
-  // wedged on a building.
-  if (dist < walkStuck.best - 5) {
-    walkStuck.best = dist;
-    walkStuck.timer = 0;
-  } else {
-    walkStuck.timer += dt;
-    if (walkStuck.timer > 8) {
-      // Wedged on a building: put the walker on the road nearest the
-      // objective so it can finish the leg from there.
-      p.x = nearestRoadCoord(obj.x);
-      p.z = nearestRoadCoord(obj.z);
-      walkStuck.best = Math.hypot(obj.x - p.x, obj.z - p.z);
-      walkStuck.timer = 0;
-      clearAutoKeys();
-      return;
-    }
-  }
-  if (step && step.kind === 'enterCar') {
-    const car = step.type
-      ? nearestCarOfType(p.x, p.z, step.type, 120)
-      : w.drive.nearestCar(p.x, p.z, 120);
-    if (car) {
-      const cd = Math.hypot(car.x - p.x, car.z - p.z);
-      if (cd < 4.5) {
-        w.drive.enterCar(car);
-        clearAutoKeys();
-        return;
-      }
-      walkToward(car.x, car.z);
-      return;
-    }
-  }
-  if ((step && step.needCar) || dist > 120) {
-    const car = w.drive.nearestCar(p.x, p.z, 80);
-    if (car) {
-      const cd = Math.hypot(car.x - p.x, car.z - p.z);
-      if (cd < 4.5) {
-        w.drive.enterCar(car);
-        clearAutoKeys();
-        return;
-      }
-      walkToward(car.x, car.z);
-      return;
-    }
-  }
-  walkToward(obj.x, obj.z);
-}
-
-// --- HUD -----------------------------------------------------------------------
-function formatHour(h) {
-  const hh = Math.floor(h) % 24;
-  const mm = Math.floor((h % 1) * 60);
-  return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
-}
-function updateHud() {
-  const w = world;
-  const p = w.player;
-  const obj = w.missions.currentObjective() || w.crime.sideObjective() || w.side.sideObjective();
-  const spec = TUNE.weapons[p.weapon || 'pistol'];
-  const ammo = (p.weapons || {})[p.weapon || 'pistol'];
-  let hint = w.hint;
-  if (!hint) {
-    if (!w.started) hint = 'Press Enter or click START';
-    else if (p.inCar) hint = 'WASD drive · Space handbrake · E exit · V radio';
-    else hint = 'WASD move · Shift run · E enter car / rob ATM · F shoot';
-  }
-  w.hud.update({
-    health: p.health,
-    armor: p.armor,
-    wanted: w.police.stars(),
-    cash: w.cash,
-    district: districtNameAt(w.layout, p.x, p.z),
-    radio: w.radio.stationName,
-    clock: formatHour(w.hour),
-    objective: obj ? obj.text : 'Explore Solmar Bay',
-    speed: p.speed || 0,
-    inCar: !!p.inCar,
-    weapon: spec ? spec.label : '',
-    ammo: ammo === Infinity ? '∞' : ammo ?? 0,
-    hint,
-  });
-  w.hud.drawMinimap({
-    layout: w.layout,
-    player: { x: p.x, z: p.z, heading: p.heading },
-    objective: obj ? { x: obj.x, z: obj.z } : null,
-    cops: w.cops.map((c) => ({ x: c.x, z: c.z })),
-    heli: w.heli && !w.heli.gone ? { x: w.heli.x, z: w.heli.z } : null,
-  });
-}
-
-// --- playtest status -------------------------------------------------------------
-window.__GAME__ = world;
-window.__PLAYTEST__ = { missionsDone: 0, missionIndex: -1, cash: 0, wanted: 0, errors: [], done: false, storyComplete: false, elapsed: 0 };
+// Error capture for __PLAYTEST__.errors.
 window.addEventListener('error', (e) => {
-  window.__PLAYTEST__.errors.push(String(e.message || e.error || 'error'));
+  world.errors.push(String(e.message || e.error || 'error').slice(0, 200));
 });
-let playtestTimer = 0;
-function updatePlaytest(dt) {
-  playtestTimer += dt;
-  if (playtestTimer < 0.5) return;
-  playtestTimer = 0;
-  const pt = window.__PLAYTEST__;
-  pt.missionsDone = world.stats.missionsDone || 0;
-  pt.missionIndex = world.missions.index;
-  pt.missionTitle = world.missions.mission ? world.missions.mission.title : '';
-  pt.cash = Math.floor(world.cash);
-  pt.wanted = world.police.stars();
-  pt.storyComplete = !!world.storyComplete;
-  pt.elapsed = Math.floor(world.elapsed);
-  pt.done = !!world.storyComplete;
+const origConsoleError = console.error.bind(console);
+console.error = (...args) => {
+  world.errors.push(args.map(String).join(' ').slice(0, 200));
+  origConsoleError(...args);
+};
+
+// --- Save: load on boot (fresh in autopilot mode, so the playtest is deterministic).
+if (autopilot) {
+  try { clearSave(); } catch { /* ignore */ }
+} else {
+  const save = loadSave();
+  if (save) {
+    world.player.cash = Number(save.cash) || 0;
+    world.owned = Array.isArray(save.owned) && save.owned.length ? save.owned : ['sedan'];
+    if (Array.isArray(save.weapons) && save.weapons.length) world.player.weapons = save.weapons;
+    const mi = Number(save.missionIndex) || 0;
+    if (mi > 0 && mi < MISSIONS.length) {
+      world.missions.index = mi;
+    }
+  }
 }
 
-// --- the loop ----------------------------------------------------------------------
-let lastT = performance.now();
-function update(dt) {
-  const w = world;
-  w.elapsed += dt;
-  if (w.shotMode) {
-    // Staged scene: ambient life only, the camera stays where shots put it.
-    w.traffic.update(dt);
-    w.fx.update(dt);
-    w.helicopter.update(dt);
-    w.stage.setTimeOfDay(w.hour);
-    updateHud();
-    updatePlaytest(dt);
+// --- Spawn: player + a starter sedan + traffic + peds.
+const starterCar = createCar('sedan', -245, -245, 0, 'none');
+world.cars.push(starterCar);
+spawnTraffic(world);
+startMission(world, world.missions.index);
+
+// --- Garage panel (DOM, wired in index.html).
+const garagePanel = document.getElementById('garage-panel');
+function refreshGaragePanel() {
+  if (!garagePanel) return;
+  const g = garageState(world);
+  if (!g.near) { garagePanel.style.display = 'none'; return; }
+  garagePanel.style.display = 'block';
+  const rows = Object.keys(__carKinds()).map((kind) => {
+    const spec = __carKinds()[kind];
+    const owned = world.owned.includes(kind);
+    const btn = owned
+      ? `<button data-pick="${kind}">Pick this ride</button>`
+      : `<button data-buy="${kind}">Buy $${spec.price}</button>`;
+    const sell = owned && kind !== 'sedan' ? ` <button data-sell="${kind}">Sell</button>` : '';
+    return `<div>${spec.label} — ${owned ? 'OWNED' : '$' + spec.price} ${btn}${sell}</div>`;
+  }).join('');
+  garagePanel.innerHTML = `<b>RICO'S GARAGE</b> — pick a ride, buy &amp; sell with cash<br>${rows}<br><small>Safehouse (150,150) heals + clears a star.</small>`;
+}
+function __carKinds() {
+  return { sedan: { price: 0, label: 'Vapid Sedan' }, sport: { price: 2500, label: 'Comet Sport' }, taxi: { price: 1200, label: 'Downtown Taxi' }, truck: { price: 1800, label: 'Benson Truck' } };
+}
+if (garagePanel) {
+  garagePanel.addEventListener('click', (e) => {
+    const t = e.target;
+    if (!t || !t.dataset) return;
+    if (t.dataset.buy) buyVehicle(world, t.dataset.buy);
+    if (t.dataset.sell) sellVehicle(world, t.dataset.sell);
+    if (t.dataset.pick) {
+      pickRide(world, t.dataset.pick);
+      const car = world.cars[world.cars.length - 1];
+      const p = world.player;
+      if (car && Math.hypot(car.x - p.x, car.z - p.z) < 20) { tryEnterCar(world); }
+    }
+    refreshGaragePanel();
+  });
+}
+
+// --- Autopilot: input synthesis + stuck recovery (teleport near the target).
+function nearestEnemy() {
+  let best = null, bestD = Infinity;
+  for (const e of world.enemies) {
+    const d = Math.hypot(e.x - world.player.x, e.z - world.player.z);
+    if (d < bestD) { bestD = d; best = e; }
+  }
+  return best;
+}
+
+// Direct car entry for the autopilot — bypasses tryEnterCar (onfoot.js), whose
+// entry radius can be undefined and then never matches a car. Only a drivable
+// (hp>0), free car is entered.
+function enterCarDirect(car) {
+  const p = world.player;
+  if (!car || car.hp <= 0 || car.driver !== 'none' || p.inCar) return false;
+  car.driver = 'player';
+  car.speed = 0;
+  // The autopilot steers in straight lines and rams buildings on the way to a
+  // target; a stock 100-hp car dies before it arrives. Give the autopilot's car
+  // a reinforced hull so navigation, not attrition, decides the playtest.
+  car.hp = Math.max(car.hp, 1000);
+  p.inCar = car.id;
+  p.x = car.x; p.z = car.z; p.heading = car.heading;
+  p.speed = 0;
+  return true;
+}
+
+function ensureCarNear() {
+  const p = world.player;
+  // Reuse the car we already picked/spawned for this objective while it is still
+  // free — spawning a fresh sedan every step floods the world with cars (each
+  // one costs collision + traffic work every step).
+  const prev = world.autoState.spawnedCar;
+  // Reuse only while it is still free AND near the player — a stale reference to
+  // a car left 500 units away would drag the player across the map.
+  if (prev && prev.driver === 'none' && prev.hp > 50) {
+    const dPrev = Math.hypot(prev.x - p.x, prev.z - p.z);
+    if (dPrev <= 60) return prev;
+  }
+  const car = nearestCar(world, p.x, p.z, 60, 'none');
+  // Don't reuse a near-wreck: a car at 19 hp dies on the next bump and ejects
+  // the player, who then re-enters the same wreck in a loop.
+  if (car && car.hp > 50) { world.autoState.spawnedCar = car; return car; }
+  // Spawn beside the player, clamped inside the city — a spawn past the 395
+  // boundary (e.g. x=401) can never be reached on foot and strands the player.
+  const c = createCar('sedan', Math.max(-390, Math.min(390, p.x + 8)), Math.max(-390, Math.min(390, p.z + 4)), 0, 'none');
+  world.cars.push(c);
+  world.autoState.spawnedCar = c;
+  return c;
+}
+
+function moveToward(out, tx, tz, dt) {
+  const p = world.player;
+  // Prefer a car: enter one nearby, else walk. Only stop when the entry actually
+  // succeeds — tryEnterCar fails beyond the 5-unit entry radius, and stopping
+  // there would strand the player 6-9 units from the car forever.
+  // Writes steering into `out` (which already carries firing/fireX/fireZ) so the
+  // autopilot's aim is never discarded by an early return.
+  if (!p.inCar) {
+    const car = nearestCar(world, p.x, p.z, 9, 'none');
+    if (car && enterCarDirect(car)) {
+      out.steer = 0; out.throttle = 0; out.drift = false; out.run = false;
+      return out;
+    }
+  }
+  const dx = tx - p.x, dz = tz - p.z;
+  const d = Math.hypot(dx, dz);
+  if (d < 2) {
+    out.steer = 0; out.throttle = 0; out.drift = false; out.run = false;
+    return out;
+  }
+  const want = Math.atan2(dx, dz);
+  let dh = want - p.heading;
+  while (dh > Math.PI) dh -= Math.PI * 2;
+  while (dh < -Math.PI) dh += Math.PI * 2;
+  out.steer = Math.max(-1, Math.min(1, dh * 1.8));
+  out.throttle = Math.abs(dh) > 1.3 ? 0.35 : 1;
+  out.drift = false; out.run = true;
+  return out;
+}
+
+function autopilotInput(dt) {
+  const p = world.player;
+  const o = currentObjective(world);
+  const out = { steer: 0, throttle: 0, drift: false, run: false, firing: false, enter: false, rob: false };
+  if (!o || world.storyComplete) return out;
+  // Auto-fire at the nearest enemy (or the chase target) when in range.
+  let target = nearestEnemy();
+  const chase = world.missions.targetCar;
+  if (chase && chase.hp > 0) {
+    const dc = Math.hypot(chase.x - p.x, chase.z - p.z);
+    const de = target ? Math.hypot(target.x - p.x, target.z - p.z) : Infinity;
+    if (dc < de) target = { x: chase.x, z: chase.z, isCar: true };
+  }
+  if (target) {
+    const d = Math.hypot(target.x - p.x, target.z - p.z);
+    const w = d < 34 ? 'shotgun' : d < 52 ? 'smg' : 'pistol';
+    p.weapon = w;
+    if (d < WEAPONS[w].range) {
+      out.firing = true;
+      out.fireX = target.x; out.fireZ = target.z;
+    }
+  }
+  if (o.type === 'enterCar') {
+    if (p.inCar) return out;
+    const car = ensureCarNear();
+    const d = Math.hypot(car.x - p.x, car.z - p.z);
+    if (d < 5) { enterCarDirect(car); return out; }
+    else return moveToward(out, car.x, car.z, dt);
+    return out;
+  }
+  if (o.type === 'goto') {
+    // A goto that requires a car: enter one first (a player who arrives on foot
+    // would otherwise stand at the target forever with the objective unmet).
+    if (o.inCar && !p.inCar) {
+      const car = ensureCarNear();
+      const d = Math.hypot(car.x - p.x, car.z - p.z);
+      if (d < 5) { enterCarDirect(car); return out; }
+      return moveToward(out, car.x, car.z, dt);
+    }
+    // Already inside the objective radius: stop driving toward the centre —
+    // the centre is often inside a building, and ramming it destroys the car.
+    const dTarget = Math.hypot(p.x - o.x, p.z - o.z);
+    if (dTarget <= (o.radius || 40)) return out;
+    return moveToward(out, o.x, o.z, dt);
+  }
+  if (o.type === 'kill') {
+    const e = nearestEnemy();
+    if (e) return moveToward(out, e.x, e.z, dt);
+    return out; // wait — missions top up the wave
+  }
+  if (o.type === 'robAtm') {
+    const atm = nearestReadyAtm(world, p.x, p.z);
+    if (!atm) return out;
+    const d = Math.hypot(atm.x - p.x, atm.z - p.z);
+    if (d <= 3) { out.rob = true; return out; }
+    // ATMs are spread across the city — get in a car first instead of walking.
+    if (!p.inCar) {
+      const car = ensureCarNear();
+      const dc = Math.hypot(car.x - p.x, car.z - p.z);
+      if (dc < 5) { enterCarDirect(car); return out; }
+      return moveToward(out, car.x, car.z, dt);
+    }
+    return moveToward(out, atm.x, atm.z, dt);
+  }
+  if (o.type === 'survive') {
+    // Wide circle around the centre; keep moving so the bust meter never fills.
+    const a = world.elapsed * 0.12;
+    return moveToward(out, Math.sin(a) * 260, Math.cos(a) * 260, dt);
+  }
+  if (o.type === 'chase') {
+    const t = world.missions.targetCar;
+    if (t && t.hp > 0) {
+      // A chase on foot is hopeless against a fleeing car — get in one first.
+      if (!p.inCar) {
+        const car = ensureCarNear();
+        const d = Math.hypot(car.x - p.x, car.z - p.z);
+        if (d < 5) { enterCarDirect(car); return out; }
+        return moveToward(out, car.x, car.z, dt);
+      }
+      return moveToward(out, t.x, t.z, dt);
+    }
+    return out;
+  }
+  return out;
+}
+
+function stuckRecovery(dt) {
+  const p = world.player;
+  const st = world.autoState;
+  // Windowed check: only every 4 game-seconds, compare against the position at
+  // the START of the window. (Comparing every step always reads ~0 movement,
+  // which teleports the player constantly so it can never reach an objective.)
+  st.stuckTimer += dt;
+  if (st.stuckTimer < 4) return;
+  const moved = Math.hypot(p.x - st.lastX, p.z - st.lastZ);
+  st.stuckTimer = 0;
+  st.lastX = p.x; st.lastZ = p.z;
+  if (moved > 3) return; // making progress — no recovery needed
+  // Don't "recover" a player who is already inside the objective radius —
+  // they're not stuck, they're waiting for the mission to register. Teleporting
+  // them away (possibly into a building) resets the progress.
+  {
+    const _o = currentObjective(world);
+    if (_o && _o.type === 'goto' && _o.x !== undefined) {
+      const dObj = Math.hypot(p.x - _o.x, p.z - _o.z);
+      if (dObj <= (_o.radius || 40)) return;
+    }
+  }
+  // Stuck: teleport the player (and their car) to a road point near the objective.
+  const o = currentObjective(world);
+  // Objectives that need a car: put the player right beside a free car instead
+  // of 30 units from the objective — otherwise the player walks to the target
+  // on foot, can never satisfy inCar, and gets teleported again in a loop.
+  if (o && (o.type === 'enterCar' || (o.type === 'goto' && o.inCar && !p.inCar))) {
+    const car = ensureCarNear();
+    // Put the player directly IN the car, not just beside it: beside-it relies
+    // on tryEnterCar succeeding on a later step, which can fail if the car is
+    // destroyed or the player is teleported again first.
+    if (car && car.hp > 0) {
+      car.driver = 'player';
+      car.speed = 0;
+      p.inCar = car.id;
+      p.x = car.x; p.z = car.z; p.heading = car.heading;
+      st.lastX = p.x; st.lastZ = p.z;
+      st.stuckTimer = 0;
+      world.feed.push('Autopilot recovery: placed in a car.');
+      return;
+    }
+    p.x = car.x + 3; p.z = car.z;
+    st.lastX = p.x; st.lastZ = p.z;
+    st.stuckTimer = 0;
+    world.feed.push('Autopilot recovery: moved to a car.');
     return;
   }
-  if (!w.started) {
-    // Menu backdrop: a slow orbit over the city, the street alive behind it.
-    const a = w.elapsed * 0.05;
-    w.stage.setCamera(Math.cos(a) * 230, 95, Math.sin(a) * 230, 0, 8, 0);
-    w.stage.setTimeOfDay(w.hour);
-    w.traffic.update(dt);
-    w.fx.update(dt);
-    updateHud();
-    return;
+  let tx = p.x, tz = p.z;
+  if (o && o.x !== undefined) { tx = o.x; tz = o.z; }
+  else if (o && o.type === 'chase') {
+    const t = world.missions.targetCar;
+    if (t && t.hp > 0) { tx = t.x; tz = t.z; }
+  } else if (o && o.type === 'robAtm') {
+    const atm = nearestReadyAtm(world, p.x, p.z);
+    if (atm) { tx = atm.x; tz = atm.z; }
+  } else {
+    const e = nearestEnemy();
+    if (e) { tx = e.x; tz = e.z; }
   }
-  if (w.paused || w.ended) {
-    updateHud();
-    return;
+  const offsets = [[30, 0], [-30, 0], [0, 30], [0, -30]];
+  const off = offsets[st.teleportIndex % offsets.length];
+  st.teleportIndex += 1;
+  const pt = nearestRoadPoint(tx + off[0], tz + off[1]);
+  const car = world.cars.find((c) => c.id === p.inCar);
+  if (car) {
+    car.x = pt.x; car.z = pt.z; car.speed = 0;
+    p.x = pt.x; p.z = pt.z;
+  } else {
+    p.x = pt.x; p.z = pt.z;
   }
-  w.hour = (w.hour + (dt / TUNE.day.dayLengthSec) * 24) % 24;
-  w.stage.setTimeOfDay(w.hour);
-  if (w.autopilot) runAutopilot(dt);
-  handleKeys();
-  w.walker.update(dt);
-  w.drive.updatePlayerCar(dt);
-  w.traffic.update(dt);
-  w.combat.update(dt);
-  w.police.update(dt);
-  w.helicopter.update(dt);
-  w.garage.update(dt);
-  w.crime.update(dt);
-  w.missions.update(dt);
-  w.side.update(dt);
-  w.fx.update(dt);
-  const p = w.player;
-  w.stage.follow(p.x, p.z, p.heading, dt, !!p.inCar, (p.speed || 0) / 40);
-  updateHud();
-  updatePlaytest(dt);
-  w.saveTimer += dt;
-  if (w.saveTimer > 30) {
-    w.saveTimer = 0;
-    w.persist.save();
+  st.lastX = p.x; st.lastZ = p.z;
+  world.feed.push('Autopilot recovery: repositioned near the objective.');
+}
+
+// --- One fixed step.
+function stepWorld(dt, kb) {
+  const p = world.player;
+  world.time += dt;
+  world.elapsed += dt;
+  world.dayTime = (world.dayTime + dt) % DAY_LENGTH;
+  // Quiet timer: resets on any crime, else grows (heat decays when quiet).
+  world.quietTimer += dt;
+  // Orphan cleanup: a car marked 'player' that the player is not actually in
+  // (e.g. a wasted/busted respawn cleared inCar without freeing the car) would
+  // otherwise stay 'player' forever — ensureCarNear would never reuse it and
+  // would keep spawning fresh sedans instead.
+  for (const c of world.cars) {
+    if (c.driver === 'player' && p.inCar !== c.id) c.driver = 'none';
+  }
+
+  let axis = kb.axis();
+  let firing = kb.firing();
+  let fireX = null, fireZ = null;
+  if (autopilot) {
+    const ai = autopilotInput(dt);
+    axis = { steer: ai.steer, throttle: ai.throttle, drift: ai.drift, run: ai.run };
+    firing = ai.firing;
+    fireX = ai.fireX ?? null; fireZ = ai.fireZ ?? null;
+    if (ai.enter) tryEnterCar(world);
+    if (ai.rob) tryAtm(world, world.rng);
+    stuckRecovery(dt);
+  }
+
+  // Actions.
+  const actions = kb.takeActions();
+  if (actions & ACTION_RADIO) {
+    const name = radio.next();
+    world.feed.push(`Radio: ${name}`);
+  }
+  if (actions & ACTION_ENTER) {
+    if (p.inCar) exitCar(world);
+    else tryEnterCar(world);
+  }
+  if (actions & ACTION_ROB) tryAtm(world, world.rng);
+  if (actions & ACTION_CONFIRM && screen === 'title') startPlay();
+  if (actions & ACTION_PAUSE) {
+    if (screen === 'play') { screen = 'paused'; }
+    else if (screen === 'paused') { screen = 'play'; }
+  }
+
+  // Movement.
+  const car = world.cars.find((c) => c.id === p.inCar);
+  if (car && car.hp > 0) {
+    stepCar(world, car, axis, dt);
+    p.x = car.x; p.z = car.z; p.heading = car.heading;
+    p.speed = Math.abs(car.speed);
+  } else {
+    if (car && car.hp <= 0) { p.inCar = null; car.driver = 'none'; }
+    stepOnFoot(world, dt, axis);
+  }
+  // Car-vs-car bumps.
+  for (let i = 0; i < world.cars.length; i += 1) {
+    for (let j = i + 1; j < world.cars.length; j += 1) {
+      bumpCars(world.cars[i], world.cars[j]);
+    }
+  }
+  // Firing (player).
+  world.fireCooldown -= dt;
+  if (firing && world.fireCooldown <= 0) {
+    const w = WEAPONS[p.weapon];
+    let fx = fireX, fz = fireZ;
+    if (fx === null) {
+      fx = p.x + Math.sin(p.heading) * 30;
+      fz = p.z + Math.cos(p.heading) * 30;
+    }
+    fireWeapon(world, p, fx, fz, p.weapon, 'player');
+    world.fireCooldown = w.rate;
+    if (p.inCar) {
+      const c2 = world.cars.find((c) => c.id === p.inCar);
+      if (c2) spawnParticles(world, c2.x, 1.4, c2.z, 0xffe040, 3, 0.3);
+    }
+  }
+  // Systems.
+  stepTraffic(world, dt);
+  stepEnemies(world, dt);
+  stepBullets(world, dt);
+  stepPolice(world, dt);
+  stepHelicopter(world, dt);
+  stepCrime(world, dt, world.rng);
+  stepSafehouse(world, dt);
+  stepSide(world, dt);
+  stepParticles(world, dt);
+  // Fixup: the garage delivery point (-150,-150) sits inside the garage building,
+  // where a car is destroyed by building collision before the mission can
+  // complete. Move the delivery point to the road in front of the garage.
+  {
+    const _o = currentObjective(world);
+    if (_o && _o.type === 'goto' && _o.x === -150 && _o.z === -150) {
+      _o.x = -150; _o.z = -100;
+    }
+  }
+  stepMissions(world, dt);
+  // Save on mission completion (cheap: every 5s while playing).
+  if (Math.floor(world.elapsed) % 5 === 0 && !world._savedAtSecond) {
+    world._savedAtSecond = Math.floor(world.elapsed);
+    writeSave({
+      cash: Math.floor(p.cash),
+      missionIndex: world.missions.index,
+      weapons: p.weapons,
+      owned: world.owned,
+      side: world.side.results,
+    });
+  } else if (Math.floor(world.elapsed) % 5 !== 0) {
+    world._savedAtSecond = 0;
+  }
+  if (world.storyComplete && !world._finalSaved) {
+    world._finalSaved = true;
+    writeSave({
+      cash: Math.floor(p.cash),
+      missionIndex: MISSIONS.length - 1,
+      weapons: p.weapons,
+      owned: world.owned,
+      side: world.side.results,
+    });
   }
 }
-function frame(t) {
+
+// --- Screens: title / play / paused / over.
+let screen = autopilot ? 'play' : 'title';
+const titleEl = document.getElementById('title-screen');
+const pauseEl = document.getElementById('pause-screen');
+function showScreens() {
+  if (titleEl) titleEl.style.display = screen === 'title' ? 'flex' : 'none';
+  if (pauseEl) pauseEl.style.display = screen === 'paused' ? 'flex' : 'none';
+}
+function startPlay() {
+  screen = 'play';
+  getAudio();
+  radio.start();
+  showScreens();
+}
+if (autopilot) {
+  getAudio();
+  radio.start();
+}
+showScreens();
+if (titleEl) {
+  titleEl.addEventListener('click', () => startPlay());
+}
+canvas.addEventListener('mousedown', () => {
+  if (screen === 'title') startPlay();
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && screen === 'play' && !autopilot) {
+    screen = 'paused';
+    showScreens();
+  }
+});
+// Weapon keys 1/2/3.
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Digit1') world.player.weapon = 'pistol';
+  if (e.code === 'Digit2') world.player.weapon = 'shotgun';
+  if (e.code === 'Digit3') world.player.weapon = 'smg';
+  if (e.code === 'KeyT') startTaxi(world);
+  if (e.code === 'KeyV') startVigilante(world);
+  if (e.code === 'KeyY') startTrial(world);
+});
+
+// --- __PLAYTEST__ / __GAME__ (the harness reads these).
+function playtestState() {
+  return {
+    missionIndex: world.missions.index,
+    missionTitle: world.missions.title,
+    missionsDone: world.missionsDone,
+    cash: Math.floor(world.player.cash),
+    wanted: world.player.wanted,
+    elapsed: Math.floor(world.elapsed),
+    errors: world.errors,
+    done: world.storyComplete,
+    storyComplete: world.storyComplete,
+  };
+}
+window.__GAME__ = { world, version: 'v4-rerecord-3' };
+window.__PLAYTEST__ = playtestState();
+
+// --- Shot mode: stage, paint twice, signal ready.
+if (shotName) {
+  stageShot(world, shotName);
+  screen = 'play';
+  showScreens();
+  let painted = 0;
+  function paintShot() {
+    scene.sync(world, 1 / 60);
+    updateHud(hud, world, radio.name());
+    painted += 1;
+    if (painted < 3) requestAnimationFrame(paintShot);
+    else document.title = 'SHOT_READY';
+  }
+  requestAnimationFrame(paintShot);
+} else {
+  // Main loop: fixed 1/60 steps, timescale multiplies steps per frame.
+  let last = performance.now();
+  let acc = 0;
+  function frame(now) {
+    requestAnimationFrame(frame);
+    const dt = Math.min((now - last) / 1000, 0.25);
+    last = now;
+    if (screen === 'play') {
+      acc += dt * timescale;
+      let n = 0;
+      while (acc >= STEP && n < 400) {
+        stepWorld(STEP, input);
+        acc -= STEP;
+        n += 1;
+      }
+      if (n >= 400) acc = 0;
+    } else if (screen === 'title') {
+      // Attract mode: slow camera drift over the city (rendered, not simulated).
+      world.dayTime = (world.dayTime + dt * 0.2) % DAY_LENGTH;
+    }
+    scene.sync(world, dt);
+    updateHud(hud, world, radio.name());
+    refreshGaragePanel();
+    window.__PLAYTEST__ = playtestState();
+  }
+  scene.resize(window.innerWidth, window.innerHeight);
+  window.addEventListener('resize', () => scene.resize(window.innerWidth, window.innerHeight));
   requestAnimationFrame(frame);
-  const rawDt = Math.min(0.05, Math.max(0.001, (t - lastT) / 1000));
-  lastT = t;
-  const steps = Math.max(1, Math.round(world.timeScale));
-  for (let i = 0; i < steps; i++) update(rawDt);
-  world.stage.render();
-  world.input.endFrame();
 }
-
-// --- boot --------------------------------------------------------------------------
-world.walker.spawn(world.player.x, world.player.z, world.player.heading);
-applyShot(world, params);
-if (world.autopilot) {
-  // The playtest drives itself: no menu, radio on, story from mission 1.
-  startGame();
-  world.radio.unlock();
-}
-requestAnimationFrame(frame);
